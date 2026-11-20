@@ -6,3 +6,7 @@ __pycache__/
 
 # 日志
 *.log
+
+
+!figures/*.png
+
