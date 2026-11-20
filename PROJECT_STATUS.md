@@ -1,7 +1,7 @@
 # PROJECT STATUS
 
-
-> 最后更新：2025-11-20（Phase 2 全部关闭）
+> 项目交接文档。换人接手或重开会话时先读这里，30 秒可恢复上下文。
+> 最后更新：2025-11-20（Phase 3 完成，数字已按双边成本口径重算）
 
 ## 环境
 
@@ -11,99 +11,92 @@
 - Tushare Pro **2000 积分**（200 元/年）：财务三表 100 行/次、限 200 次/分钟、无 `_vip`。
 - 依赖：tushare / pandas / numpy / pyarrow / python-dotenv / statsmodels / matplotlib
 
+## 最终数字（唯一有效口径：双边成本 + buy-and-hold）
+
+| 配置 | 换手 | 毛利 | 成本 | 净收益 | 超额 | 行业偏离 |
+|---|---:|---:|---:|---:|---:|---:|
+| EW Baseline | 2437% | 13.75% | 5.86% | 7.29% | 2.01% | 17.50% |
+| EW + 门槛 | 619% | 10.77% | 1.49% | 9.14% | 3.77% | 16.60% |
+| Strat Baseline | 2514% | 11.96% | 6.05% | 5.41% | 0.22% | 1.35% |
+| **Strat + 门槛** | **714%** | 11.54% | **1.72%** | **9.65%** | **4.25%** | **1.35%** |
+
+容量约 **2.4 亿**（1 亿 +1.91%，2 亿 +0.42%，3 亿 −0.71%）。
+基线构造在任何 AUM 下超额为负，不可投资。
+
+**Phase 1 头条已修订**：9.79% → 7.29%，超额 4.38% → 2.01%。
+原因：权重口径 +0.7pp、成本口径 −2.9pp（旧代码只对单边换手收一次费）。
+
 ## 目录与关键数据形状
 
 | 路径 | 内容 | 形状 / 注意 |
 |---|---|---|
-| `data/raw/daily_YYYY.parquet` | 日线 | 8 个文件，含 `pct_chg`；**glob 用 `daily_????`** |
+| `data/raw/daily_YYYY.parquet` | 日线 | 8 个文件，含 `pct_chg` / `amount`；glob 用 `daily_????` |
 | `data/raw/daily_basic_YYYY.parquet` | 每日指标 | turnover_rate / circ_mv / pe_ttm |
 | `data/raw/adj_factor_YYYY.parquet` | 复权因子 | 8 个文件 |
-| `data/raw_fina/{api}_part*.parquet` | 财务三表原始 | 每表 25–35 万行，**保留 update_flag 0/1 重复行** |
-| `data/ref/` | stock_basic / stock_delisted / namechange | namechange 14,266 条 |
-| `data/panel/tradable.parquet` | **宽表** | `(1921, 5696)`，index = `YYYYMMDD` **字符串**，columns = 代码 |
+| `data/raw_fina/{api}_part*.parquet` | 财务三表原始 | 每表 25–35 万行，保留 update_flag 0/1 重复行 |
+| `data/ref/` | stock_basic / stock_delisted / namechange | 两者**都带 industry** |
+| `data/panel/tradable.parquet` | **宽表** | `(1921, 5696)`，index = `YYYYMMDD` **字符串** |
 | `data/panel/factors.parquet` | **长表** | `(1902858, 8)`，trade_date 为 **str** |
-| `data/panel/factors_neutral.parquet` | 中性化后 | 07 读的是这个 |
+| `data/panel/factors_neutral.parquet` | 中性化后 | 07/19/20/24/25/26/27/28 都读它 |
 | `data/panel/factor_accruals.parquet` | Phase 2a | `(1827435, 7)` |
 | `data/panel/factor_pead.parquet` | Phase 2b | `(1119547, 7)` |
-| `data/output_backtest/daily_net.parquet` | 各方案日净收益 | `(1921, 8)`，供 18 用 |
-
-`data/` 全部在 `.gitignore` 内，仓库里只有代码与文档。
+| `data/output_turnover/` | Phase 3 输出 | `sensitivity_v2.csv` / `final_numbers.csv` / `capacity.csv` |
 
 ## 脚本状态
 
-| 脚本 | 状态 | 关键输出 |
-|---|---|---|
-| 01–06 | ✅ | universe 1921 天 / 日均 991；factors 1,902,858 行；中性化 IC 0.017→0.035 |
-| 07_backtest | ✅ | 5 变体；EW 9.79% / 超额 4.38% / IR 0.663 |
-| 08_attribution | ✅ | alpha −2.18% / −4.37% |
-| 09_style_neutral | ✅ | 残差化后超额 −5.44% |
-| 10_pull_fina | ✅ | 92 分钟，17,088 次调用 |
-| 11_build_accruals | ✅ | 覆盖率 96.0% |
-| 12_check_accruals | ✅ | **REJECT**（IC 0.0093） |
-| 14_build_pead | ✅ | SUE 可用 116,075 行，在册覆盖 58.8% |
-| 15_check_pead_horizon | ✅ | IC 5/20/60d = 0.0142 / 0.0229 / 0.0297 |
-| 16_check_pead_marginal | ✅ | 残差 IC 0.0300；comp ICIR 0.462→0.538 |
-| 16b_check_selection | ✅ | 无正向选择偏误（子样本 0.0880 < 全样本 0.0964） |
-| 18_significance | ✅ | **全部 t < 1，CI 含 0 → 拒绝** |
+| 脚本 | 状态 |
+|---|---|
+| 01–06 | ✅ universe 1921 天/日均 991；factors 1,902,858 行；中性化 IC 0.017→0.035 |
+| 07_backtest | ✅ 5 变体（旧口径，仅作历史对照） |
+| 08_attribution | ⚠️ **需在双边成本口径下重跑**，现有 alpha −2.18% / −4.37% 偏乐观 |
+| 09_style_neutral | ⚠️ 同上 |
+| 10–12 | ✅ 应计项，REJECT |
+| 14–18 | ✅ PEAD/SUE，REJECT |
+| 19 / 20 / 24 / 25 | ✅ 换手诊断与两轮方案 |
+| 26_sensitivity | ✅ Δ 平台 + placebo 归因 |
+| 27_impact_cost | ✅ 容量曲线 |
+| 28_fix_cost_convention | ✅ 最终数字（双边口径） |
 
-## 核心结论
+## 核心结论（四条）
 
-**Phase 1**：smart beta，无 alpha。超额 4.38% 来自 value（β 0.285）+ lowvol（β 0.288）；
-控行业后 alpha −4.37%（t = −2.91）。
-
-**Phase 2a 应计项**：与现有因子相关性极低（max 0.054，确实是新维度），
-但 IC 0.0093、2020/2025 两年为负、五分组 Q5 < Q4 → 拒绝。**失败原因：信号太弱。**
-
-**Phase 2b PEAD/SUE**：截面全部过关（IC 0.0229@20d、七年同号、残差 0.0300、分组单调），
-但组合层面：
-- EW：超额 4.38% → 3.96%，配对 t = −0.27
-- Stratified：2.77% → 3.43%，配对 t = +0.66
-- 换手 23.94% → 24.00%（Top50 名单几乎没动）
-→ 拒绝。**失败原因：信号真实，但在 5 日换手的 Top50 组合里无法变现。**
-
-**三次尝试，三种不同的失败原因。这是项目最有价值的结论。**
+1. **Phase 1**：smart beta，无 alpha。超额来自 value（β 0.285）+ lowvol（β 0.288）。
+2. **Phase 2a 应计项**：相关性 0.054（真新维度），但 IC 0.0093、两年为负 → 拒绝。**信号太弱。**
+3. **Phase 2b PEAD/SUE**：截面全过（IC 0.023@20d、七年同号），组合不显著（t = −0.27 / +0.66）→ 拒绝。**信号期与调仓期错配。**
+4. **Phase 3 换手控制**：配额守恒的分数门槛把换手从 2514% 降到 714%，超额从 0.22% 升到 **4.25%**。其中 **+8.03pp 来自成本、+2.57pp 来自信号**（同换手配对）。
 
 ## 样本外说明
 
-现有 2018–2025 全样本已被反复使用（Phase 1 归因、Phase 2 两个候选的全部检验），
-**不构成样本外**。分年表逐条讨论过，等于把每一年都"看过了"。
-
-因此：任何新版本必须在 **2026-01 之后**的数据上做首次、也是唯一一次验证。
-在此之前不得使用 2026 年数据做任何选择、调参或方向判断。
+2018–2025 全样本已被反复使用（Phase 1 归因、Phase 2 两个候选、Phase 3 全部实验）。
+**不构成样本外。** 任何新配置必须在 **2026-01 之后**的数据上做首次、也是唯一一次验证。
 
 ## 下一步
 
-**Phase 3 的第一件事不是写优化器，而是量化当前持仓特征：**
-
-- Top50 的规模分位分布
-- 行业分布与基准的偏差（均值 7.37% / 最大 17.50% 的结构性来源）
-- 换手来源拆解：新进榜 vs 权重漂移
-- 成本敏感度：12bp → 20bp / 30bp 下的净收益曲线
-
-没有这个基线，"加了约束之后改了什么"就说不清。预计半天，只依赖现有 `07` 输出。
-
-之后才是：行业 ±2% 约束、规模中性（`SIZE_BUCKETS` 提到 2–3）、换手上限、平方根律冲击成本。
-
-**明确不再尝试**：应计项的任何变体、PEAD 的任何变体（换 horizon / 换 SUE 定义 / 调 SIZE_BUCKETS）。
-**需 10000 积分才能做**：分析师预期修正、资金流（5000 分不够，别买错档）。
+| 优先级 | 事项 | 说明 |
+|---|---|---|
+| 1 | **重跑 08 / 09** | 用双边成本口径重算 alpha，预期更负，结论方向不变 |
+| 2 | 复核 `figures/` | 4 张图需与最新数字一致，`nav.png` 已被 07 覆盖 |
+| 3 | 补 2026 数据后做 OOS | 唯一的样本外验证机会 |
+| — | 不再尝试 | 应计项与 PEAD 的任何变体 |
 
 ## 已知坑（接手必读）
 
 1. **`.venv/bin/python`**，别用裸 `python`。
-2. `tradable.parquet` 是**宽表**，代码在 `columns` 上，不是 `ts_code` 列。
+2. `tradable.parquet` 是**宽表**，代码在 `columns` 上。
 3. `glob('daily*.parquet')` 会匹配 `daily_basic_*`，必须 `daily_????`。
-4. `merge_asof` 要求 **`on` 键全局单调**，排序时 on 键放第一位（不是 `[by, on]`）。
-5. `Series.reset_index()` 产生 **3 列**（两个索引层 + 值列），别直接赋 2 个列名。
-6. 字符串日期取月份是 **`[4:6]`**，`[5:7]` 会全 NaN 且**不报错**。
-7. `update_flag` 的 NaN 转 str 会变 `'nan'`，排序时排在 `'1'` 前面 → 先 `fillna('0')`。
+4. `merge_asof` 要求 **`on` 键全局单调**，排序时 on 键放第一位。
+5. `Series.reset_index()` 产生 **3 列**（两个索引层 + 值列）。
+6. 字符串日期取月份是 **`[4:6]`**，`[5:7]` 全 NaN 且不报错。
+7. `update_flag` 的 NaN 转 str 变 `'nan'`，排序时排在 `'1'` 前 → 先 `fillna('0')`。
 8. **启动长任务前 `ps aux | grep 脚本名`**：曾有两个进程同时拉 income，重复率 47%。
 9. `.BJ` 的 `pct_chg` 有垃圾值（max 200,400%，占 3.0%），全市场计算要滤 `.SH` / `.SZ`。
-10. **日期类型有两种**：`tradable` / 新因子表是 datetime64，`factors` / `daily` 是 str。跨表合并前先统一。
-11. **覆盖率的分母要看清**：SUE 显示 10.2% 是全网格口径（1094 万格），在册口径是 58.8%（190 万格）。同一件事。
-12. **`combine()` 是 `fillna(0)` 之后相加**，不是取均值。加因子要按"和"来想权重。
+10. **日期类型有两种**：`tradable`/新因子表是 datetime64，`factors`/`daily` 是 str。
+11. **覆盖率分母要写清**：SUE 10.2% 是全网格口径，在册口径 58.8%。
+12. **`combine()` 是 fillna(0) 后相加**，不是取均值。
+13. **`int(0.0012 * 1e4)` = 11**，别用 `int()` 把浮点转标签，用整数常量。
+14. **成本必须双边计费**：`Σ|Δw| × c`，不是 `单边换手 × c`。旧代码少收一半。
+15. **换手率汇报要用 `to.replace(0, np.nan).mean()`**，否则被非调仓日的 0 摊薄 5 倍。
 
 ## 一句话交接
 
-Phase 1 证明超额 = value + lowvol（smart beta，无 alpha）；Phase 2 两个正交候选分别因
-"信号太弱"和"信号期与调仓期错配"被拒。**下一步不再找 alpha，做约束优化与冲击成本，
-把现有的收益做到低换手、可交付；任何新结论只能等 2026 年后的数据验证。**
+四次迭代后结论稳定：**没有 alpha，但有一个 2.4 亿容量、714% 换手、12bp 下 4.25% 超额的行业中性 smart-beta 组合**。
+收益的 3/4 来自成本控制，1/4 来自信号时效性——这个比例必须诚实地说出来。

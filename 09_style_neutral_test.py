@@ -1,8 +1,11 @@
 """
-09_style_neutral_test.py
+09_style_neutral_test.py  (v2)
 A) 超额收益归因（不含市场）
 B) 风格中性组合（诊断性，方法粗糙，结论需谨慎）
-输出 data/output_style/
+
+v2 修改（仅两处，其余与 v1 完全一致）
+  1) 成本改为双边计费：cost = 2 × 单边换手 × COST
+  2) 权重在两次调仓之间按收益漂移（buy-and-hold）
 """
 import numpy as np
 import pandas as pd
@@ -20,6 +23,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 FACTORS = ["rev_5", "turn_20", "vol_20", "ep"]
 TOP_N, REBAL, COST = 50, 5, 0.0012
+COST_MULT = 2.0          # 双边计费
 
 
 def log(m):
@@ -60,9 +64,11 @@ bench = fwd.where(mask).mean(axis=1)
 
 
 # ==================== 回测 ====================
-def run(score_mat):
-    w_prev = pd.Series(0.0, index=cols)
+def run(score_mat, return_old=False):
+    """v2：权重按收益漂移；成本双边计费。"""
+    w_live = pd.Series(0.0, index=cols)
     rows = []
+
     for i, d in enumerate(idx):
         to = 0.0
         if i % REBAL == 0:
@@ -70,11 +76,24 @@ def run(score_mat):
             if len(s) >= TOP_N:
                 held = s.nlargest(TOP_N).index
                 w_new = pd.Series(1 / TOP_N, index=held).reindex(cols).fillna(0)
-                to = (w_new - w_prev).abs().sum() / 2
-                w_prev = w_new
+                tot = w_live.sum()
+                w_drift = (w_live / tot) if tot > 0 else w_live
+                to = float((w_new - w_drift).abs().sum() / 2)
+                w_live = w_new
+
         r = fwd.loc[d].fillna(0)
-        rows.append({"date": d, "net": float((w_prev * r).sum()) - to * COST})
-    return pd.DataFrame(rows).set_index("date")["net"].iloc[:-1]
+        gross = float((w_live * r).sum())
+        rows.append({"date": d,
+                     "gross": gross,
+                     "net": gross - to * COST * COST_MULT,
+                     "net_old": gross - to * COST,
+                     "turnover": to})
+        w_live = w_live * (1 + r)
+
+    res = pd.DataFrame(rows).set_index("date")
+    if return_old:
+        return res["net"].iloc[:-1], res["net_old"].iloc[:-1], res["turnover"]
+    return res["net"].iloc[:-1]
 
 
 # ==================== 风格因子 ====================
@@ -100,12 +119,19 @@ prem.to_frame("annualized_return_pct").to_csv(OUT / "style_premiums.csv",
 
 
 # ==================== A. 超额回归 ====================
-strat = run(score)
+strat, strat_old, turnover = run(score, return_old=True)
+
+log("\n===== 口径对照（年化）=====")
+ann_to = turnover.replace(0, np.nan).mean() * (252 / REBAL)
+for tag, series in [("旧口径（单边）", strat_old), ("新口径（双边）", strat)]:
+    ann = (1 + series).cumprod().iloc[-1] ** (252 / len(series)) - 1
+    log(f"   {tag}  年化 {ann:7.2%}   换手 {ann_to * 100:6.0f}%")
+
 excess = (strat - bench.reindex(strat.index).fillna(0)).dropna()
 X = sm.add_constant(style.reindex(excess.index).fillna(0))
 m1 = sm.OLS(excess, X).fit()
 
-log("\n===== A. 超额收益归因（不含市场）=====")
+log("\n===== A. 超额收益归因（不含市场，双边成本）=====")
 log(f"R² = {m1.rsquared:.3f}")
 tab_a = pd.DataFrame({"beta": m1.params, "t": m1.tvalues, "p": m1.pvalues})
 print(tab_a.round(4).to_string())
@@ -147,7 +173,7 @@ strat_n = run(neutral_score)
 ex_n = (strat_n - bench.reindex(strat_n.index).fillna(0)).dropna()
 m2 = sm.OLS(ex_n, sm.add_constant(style.reindex(ex_n.index).fillna(0))).fit()
 
-log("\n===== B. 风格中性组合（诊断性）=====")
+log("\n===== B. 风格中性组合（诊断性，双边成本）=====")
 log(f"R² = {m2.rsquared:.3f}")
 tab_b = pd.DataFrame({"beta": m2.params, "t": m2.tvalues})
 print(tab_b.round(4).to_string())
@@ -194,7 +220,7 @@ plt.tight_layout()
 plt.savefig(OUT / "style_premiums.png", dpi=130)
 plt.close()
 
-# 图 2：原组合 / 风格中性组 合 / 基准
+# 图 2：原组合 / 风格中性组合 / 基准
 fig, ax = plt.subplots(figsize=(11, 6))
 b_nav = (1 + bench.reindex(idx).fillna(0)).cumprod()
 ax.plot(pd.to_datetime(idx), b_nav.values, label="Benchmark (EW)",
@@ -204,7 +230,7 @@ ax.plot(pd.to_datetime(strat.index), (1 + strat).cumprod().values,
 ax.plot(pd.to_datetime(strat_n.index), nav_n.values,
         label="Style-neutral (diagnostic)", linewidth=1.3)
 ax.set_yscale("log")
-ax.set_title("Original vs Style-Neutral vs Benchmark")
+ax.set_title("Original vs Style-Neutral vs Benchmark (two-sided cost)")
 ax.legend()
 ax.grid(alpha=0.3)
 fig.autofmt_xdate()

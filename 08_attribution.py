@@ -1,9 +1,13 @@
 """
-08_attribution.py
+08_attribution.py  (v2)
 A/B 对比归因：
   A) Top50 等权（行业未控）
   B) Top50 行业分层抽样（行业受控）
-输出 data/output_attribution/
+
+v2 修改（仅两处，其余与 v1 完全一致）
+  1) 成本改为双边计费：cost = 2 × 单边换手 × COST
+  2) 权重在两次调仓之间按收益漂移（buy-and-hold），不再固定
+  同时输出旧/新两种口径的年化收益，便于逐项对照
 """
 import numpy as np
 import pandas as pd
@@ -22,6 +26,7 @@ OUT.mkdir(parents=True, exist_ok=True)
 
 FACTORS = ["rev_5", "turn_20", "vol_20", "ep"]
 TOP_N, REBAL, COST = 50, 5, 0.0012
+COST_MULT = 2.0          # 双边计费
 SIZE_BUCKETS = 1
 
 
@@ -116,11 +121,14 @@ def _ind_dev(picks, universe_codes):
 
 
 def run(mode):
-    w_prev = pd.Series(0.0, index=cols)
+    """v2：权重按收益漂移；成本双边计费。同时返回旧口径净收益用于对照。"""
+    w_live = pd.Series(0.0, index=cols)
     rows = []
+
     for i, d in enumerate(idx):
         to = 0.0
         ind_dev = np.nan
+
         if i % REBAL == 0:
             valid = mask.loc[d]
             s = score.loc[d].where(valid).dropna()
@@ -129,13 +137,30 @@ def run(mode):
                 if picks:
                     ind_dev = _ind_dev(picks, valid[valid].index)
                     w_new = pd.Series(1.0 / len(picks), index=picks).reindex(cols).fillna(0.0)
-                    to = (w_new - w_prev).abs().sum() / 2
-                    w_prev = w_new
+                    tot = w_live.sum()
+                    w_drift = (w_live / tot) if tot > 0 else w_live
+                    to = float((w_new - w_drift).abs().sum() / 2)
+                    w_live = w_new
+
         r = fwd.loc[d].fillna(0)
-        rows.append({"date": d, "net": float((w_prev * r).sum()) - to * COST,
-                     "turnover": to, "ind_dev": ind_dev})
+        gross = float((w_live * r).sum())
+        rows.append({
+            "date": d,
+            "gross": gross,
+            "net": gross - to * COST * COST_MULT,
+            "net_old": gross - to * COST,
+            "turnover": to,
+            "ind_dev": ind_dev,
+        })
+        w_live = w_live * (1 + r)
+
     res = pd.DataFrame(rows).set_index("date")
-    return res["net"].iloc[:-1], res["ind_dev"].dropna()
+    return {
+        "net": res["net"].iloc[:-1],
+        "net_old": res["net_old"].iloc[:-1],
+        "turnover": res["turnover"],
+        "ind_dev": res["ind_dev"].dropna(),
+    }
 
 
 # ==================== 风格因子 ====================
@@ -179,12 +204,28 @@ def attribute(rets, label):
     }
 
 
-log("\n② 回测两个组合...")
-net_plain, dev_plain = run("plain")
-net_strat, dev_strat = run("stratified")
+log("\n② 回测两个组合（双边成本 + 权重漂移）...")
+ra = run("plain")
+rb = run("stratified")
 
-log(f"   A 行业偏离  均值 {dev_plain.mean():.4f}  最大 {dev_plain.max():.4f}")
-log(f"   B 行业偏离  均值 {dev_strat.mean():.4f}  最大 {dev_strat.max():.4f}")
+net_plain, net_strat = ra["net"], rb["net"]
+
+
+def annualized(net):
+    return (1 + net).cumprod().iloc[-1] ** (252 / len(net)) - 1
+
+
+log("\n===== 口径对照（年化）=====")
+for tag, r in [("A 行业未控", ra), ("B 行业受控", rb)]:
+    old = annualized(r["net_old"])
+    new = annualized(r["net"])
+    ann_to = r["turnover"].replace(0, np.nan).mean() * (252 / REBAL)
+    log(f"   {tag}  换手 {ann_to * 100:6.0f}%   "
+        f"旧口径 {old:7.2%}（成本 {ann_to * COST:5.2%}）   "
+        f"新口径 {new:7.2%}（成本 {ann_to * COST * COST_MULT:5.2%}）")
+
+log(f"\n   A 行业偏离  均值 {ra['ind_dev'].mean():.4f}  最大 {ra['ind_dev'].max():.4f}")
+log(f"   B 行业偏离  均值 {rb['ind_dev'].mean():.4f}  最大 {rb['ind_dev'].max():.4f}")
 
 a = attribute(net_plain, "A. Top50 等权（行业未控）")
 b = attribute(net_strat, "B. Top50 分层抽样（行业受控）")
@@ -198,7 +239,7 @@ print(cmp.round(4).to_string())
 cmp.to_csv(OUT / "attribution_compare.csv", encoding="utf-8-sig")
 
 
-# ==================== 关键解读（修好后的版本） ====================
+# ==================== 关键解读 ====================
 log("\n===== 关键解读 =====")
 for k in ["size", "value", "lowvol"]:
     if abs(a[k]) < 0.02:
@@ -210,6 +251,7 @@ for k in ["size", "value", "lowvol"]:
 log(f"\n  alpha : {a['alpha年化']:.2%} → {b['alpha年化']:.2%}")
 log(f"  t 值  : {a['alpha_t']:.2f} → {b['alpha_t']:.2f}")
 log(f"  R²    : {a['R2']:.3f} → {b['R2']:.3f}")
+log("\n  注：以上为双边成本口径，alpha 会比 v1 更低（更负），这是修正而非恶化。")
 
 
 # ==================== 保存超额净值对比 ====================
@@ -222,10 +264,12 @@ nav_a = excess_nav(net_plain)
 nav_b = excess_nav(net_strat)
 
 fig, ax = plt.subplots(figsize=(11, 6))
-ax.plot(pd.to_datetime(nav_a.index), nav_a.values, label="A: Top50 (industry uncontrolled)", linewidth=1.2)
-ax.plot(pd.to_datetime(nav_b.index), nav_b.values, label="B: Top50 stratified (industry controlled)", linewidth=1.2)
+ax.plot(pd.to_datetime(nav_a.index), nav_a.values,
+        label="A: Top50 (industry uncontrolled)", linewidth=1.2)
+ax.plot(pd.to_datetime(nav_b.index), nav_b.values,
+        label="B: Top50 stratified (industry controlled)", linewidth=1.2)
 ax.axhline(1, color="gray", linestyle="--", linewidth=1)
-ax.set_title("Excess NAV: industry bets removed")
+ax.set_title("Excess NAV: industry bets removed (two-sided cost)")
 ax.legend()
 ax.grid(alpha=0.3)
 fig.autofmt_xdate()
