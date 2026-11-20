@@ -1,8 +1,13 @@
 """
-07_backtest.py
+07_backtest.py  (v3)
 第 6 天：因子合成 → 组合构建 → 扣成本 → 净值 / 超额 / 多空 / 行业偏离
-五种方案：
+
+原五种方案（保持不变，Phase 1 口径）：
   Equal Weight / IC Weighted / Orthogonalized / EW + Buffer / EW + Stratified
+
+v2 新增（第 13 节）：4 因子 vs 5 因子（加 SUE）并排对比
+v3 新增：把各方案的日净收益落盘到 data/output_backtest/daily_net.parquet，
+         供 18_significance.py 做配对显著性检验
 """
 import time
 
@@ -26,6 +31,10 @@ BUFFER_N = 100
 REBAL = 5
 COST = 0.0012
 SIZE_BUCKETS = 1
+
+PEAD_FILE = PANEL / "factor_pead.parquet"
+W_PEAD = 1.0          # 与 4 因子等权；0.5 作为敏感性
+W_PEAD_ALT = 0.5
 
 
 def log(m):
@@ -72,6 +81,16 @@ industry = (sb.set_index("ts_code")["industry"]
               .reindex(cols).fillna("UNKNOWN"))
 
 log(f"   {len(idx)} 天 × {len(cols)} 只   行业数 {industry.nunique()}")
+
+# ---- 2b. SUE 因子（宽表，缺失=NaN，后续 fill 0） ----
+log("②b 读取 SUE 因子...")
+pead = pd.read_parquet(PEAD_FILE, columns=["trade_date", "ts_code", "factor_z"])
+pead["trade_date"] = pd.to_datetime(pead.trade_date).dt.strftime("%Y%m%d")
+sue_wide = (pead.drop_duplicates(["trade_date", "ts_code"])
+                .pivot(index="trade_date", columns="ts_code", values="factor_z")
+                .reindex(index=idx, columns=cols))
+log(f"   SUE 非空 {sue_wide.notna().mean().mean():.1%}（全网格口径；"
+    f"在册口径约 58.8%）")
 
 
 # ==================== 3. Rank IC ====================
@@ -131,10 +150,14 @@ log("   正交化 vol_20 ...")
 vol_orth = orthogonalize(wide["vol_20"], wide["turn_20"])
 score_orth = combine([wide["rev_5"], wide["turn_20"], vol_orth, wide["ep"]])
 
+# ---- 4b. 5 因子复合 ----
+score_eq5 = (score_eq + W_PEAD * sue_wide.fillna(0.0)).where(score_eq.notna())
+score_eq5_alt = (score_eq + W_PEAD_ALT * sue_wide.fillna(0.0)).where(score_eq.notna())
+log(f"   5 因子复合完成（W_SUE={W_PEAD}, 敏感性 {W_PEAD_ALT}）")
+
 
 # ==================== 5. 选股方法 ====================
 def _ind_dev(picks, universe_codes):
-    """组合行业权重 vs 基准行业权重的最大绝对偏离"""
     if len(picks) == 0:
         return np.nan
     pw = pd.Series(1.0 / len(picks), index=picks)
@@ -160,9 +183,6 @@ def select_buffer(s, valid, held):
 
 
 def select_stratified(s, valid, d, top_n=TOP_N, size_buckets=SIZE_BUCKETS):
-    """
-    行业 × 规模分层抽样，用最大余数法分配名额，保证 Σquota == top_n
-    """
     lm = logmv.loc[d]
     sz = np.ceil(lm.where(valid).rank(pct=True) * size_buckets).clip(1, size_buckets)
 
@@ -175,12 +195,10 @@ def select_stratified(s, valid, d, top_n=TOP_N, size_buckets=SIZE_BUCKETS):
     if len(df) <= top_n:
         return list(df.nlargest(top_n, "score").index)
 
-    # 按桶的基准占比 → 期望名额
     share = df.groupby(["ind", "sz"]).size() / len(df)
     raw = share * top_n
     base = np.floor(raw).astype(int)
 
-    # 最大余数法补齐到 top_n
     remain = top_n - int(base.sum())
     if remain > 0:
         order = (raw - base).sort_values(ascending=False).index
@@ -196,7 +214,6 @@ def select_stratified(s, valid, d, top_n=TOP_N, size_buckets=SIZE_BUCKETS):
 
     picks = list(dict.fromkeys(picks))[:top_n]
 
-    # 某桶股票不足时，用剩余最高分补齐
     if len(picks) < top_n:
         taken = set(picks)
         rest = df[~df.index.isin(taken)].nlargest(top_n - len(picks), "score")
@@ -272,12 +289,13 @@ VARIANTS = [
 
 log("⑤ 回测五种方案...")
 bench = fwd.where(mask).mean(axis=1)
-results, navs = {}, {}
+results, navs, results_daily = {}, {}, {}
 for name, sc, mode in VARIANTS:
     res = backtest(sc, mode=mode)
     m = metrics(res)
     navs[name] = m.pop("nav")
     results[name] = m
+    results_daily[name] = res["net"]
     log(f"   {name} 完成")
 
 summary = pd.DataFrame(results).T
@@ -401,4 +419,91 @@ plt.savefig(OUT / "nav.png", dpi=130)
 plt.close()
 
 log(f"   ✅ 保存到 {OUT}/")
+
+
+# ==================== 13. 4 因子 vs 5 因子 ====================
+log("\n" + "=" * 70)
+log("⑧ 4 因子 vs 5 因子（加 SUE）")
+log("=" * 70)
+
+PEAD_VARIANTS = [
+    ("EW + SUE",              score_eq5,     "plain"),
+    ("EW + SUE (w=0.5)",      score_eq5_alt, "plain"),
+    ("EW + SUE + Stratified", score_eq5,     "stratified"),
+]
+
+pead_results, pead_navs, pead_daily = {}, {}, {}
+for name, sc, mode in PEAD_VARIANTS:
+    res = backtest(sc, mode=mode)
+    m = metrics(res)
+    pead_navs[name] = m.pop("nav")
+    pead_results[name] = m
+    pead_daily[name] = res["net"]
+    log(f"   {name} 完成")
+
+# Top50 里有多少只带 SUE 信号
+cov = []
+for i, d in enumerate(idx):
+    if i % REBAL:
+        continue
+    s = score_eq5.loc[d].where(mask.loc[d]).dropna()
+    if len(s) < TOP_N:
+        continue
+    picks = s.nlargest(TOP_N).index
+    cov.append(sue_wide.loc[d, picks].notna().mean())
+log(f"\n   Top50 中带 SUE 的比例：{np.mean(cov):.1%}")
+
+# 并排对比
+CMP = ["Equal Weight", "EW + SUE", "EW + SUE (w=0.5)",
+       "EW + Stratified", "EW + SUE + Stratified"]
+cmp_tab = pd.DataFrame({**results, **pead_results}).T.loc[CMP]
+
+extra_cmp = {}
+for name in CMP:
+    nav = navs.get(name, pead_navs.get(name))
+    ex_nav = nav / bench_nav.reindex(nav.index).ffill()
+    ex_ret = ex_nav.pct_change().dropna()
+    ex_ann = ex_nav.iloc[-1] ** (252 / len(ex_nav)) - 1
+    ex_vol = ex_ret.std() * np.sqrt(252)
+    extra_cmp[name] = {"超额年化": ex_ann,
+                       "信息比率": ex_ann / ex_vol if ex_vol > 0 else np.nan,
+                       "超额最大回撤": (ex_nav / ex_nav.cummax() - 1).min()}
+extra_cmp = pd.DataFrame(extra_cmp).T
+
+log("\n===== 组合指标对比 =====")
+log(cmp_tab[["年化", "夏普", "最大回撤", "年化换手", "年化成本",
+             "行业偏离均值", "行业偏离最大"]].round(4).to_string())
+
+log("\n===== 超额对比 =====")
+log(extra_cmp.round(4).to_string())
+
+# 分年度对比（重点看 2024 / 2025）
+log("\n===== 分年度收益（扣费后，%）=====")
+nav_all = {**navs, **pead_navs}
+yr_cmp = pd.DataFrame({
+    name: (1 + nav_all[name]).groupby(year_arr).apply(lambda x: x.iloc[-1] / x.iloc[0] - 1)
+    for name in CMP
+})
+log((yr_cmp * 100).round(2).to_string())
+
+log("\n===== 关键增量（相对 4 因子基线）=====")
+d_ex = extra_cmp.loc["EW + SUE", "超额年化"] - extra_cmp.loc["Equal Weight", "超额年化"]
+d_ir = extra_cmp.loc["EW + SUE", "信息比率"] - extra_cmp.loc["Equal Weight", "信息比率"]
+d_ex_s = extra_cmp.loc["EW + SUE + Stratified", "超额年化"] - extra_cmp.loc["EW + Stratified", "超额年化"]
+d_ir_s = extra_cmp.loc["EW + SUE + Stratified", "信息比率"] - extra_cmp.loc["EW + Stratified", "信息比率"]
+log(f"   EW 口径：       超额 {d_ex:+.2%}   IR {d_ir:+.3f}")
+log(f"   Stratified 口径：超额 {d_ex_s:+.2%}   IR {d_ir_s:+.3f}")
+log(f"   2024 增量：{yr_cmp.loc['2024', 'EW + SUE'] - yr_cmp.loc['2024', 'Equal Weight']:+.2%}")
+log(f"   2025 增量：{yr_cmp.loc['2025', 'EW + SUE'] - yr_cmp.loc['2025', 'Equal Weight']:+.2%}")
+
+cmp_tab.to_csv(OUT / "pead_comparison.csv", encoding="utf-8-sig")
+extra_cmp.to_csv(OUT / "pead_excess.csv", encoding="utf-8-sig")
+yr_cmp.to_csv(OUT / "pead_yearly.csv", encoding="utf-8-sig")
+
+# ---- v3: 日净收益落盘，供配对显著性检验 ----
+daily_net = pd.DataFrame({**results_daily, **pead_daily})
+daily_net.to_parquet(OUT / "daily_net.parquet")
+log(f"\n   ✅ daily_net 已保存  {daily_net.shape} -> {OUT}/daily_net.parquet")
+log(f"   ✅ 对比结果保存到 {OUT}/")
+
 log(f"\n总耗时 {(time.time() - t0) / 60:.1f} 分钟")
