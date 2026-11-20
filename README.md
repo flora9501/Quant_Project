@@ -18,7 +18,8 @@
 > 4. Two further candidates were built and rejected on pre-registered gates: **accruals** (orthogonal at 0.054, IC 0.009, sign flips in two years) and **PEAD/SUE** (orthogonal at 0.099, IC 0.023 with seven positive years — but no significant portfolio improvement, paired t = −0.27 / +0.66).
 > 5. **What did work was implementation.** Industry-scoped score thresholds cut turnover from 2514% to 714% and lifted the industry-neutral portfolio from **0.22% to 4.25% excess**. Tracking error is **7.06%**, of which **77.2% comes from stock selection and only 4.2% from industry**. Capacity is about **2.4 亿 CNY**.
 > 6. Against the **cap-weighted CSI 1000 index** — the benchmark a product would be measured against — the portfolio earns **9.65%** with **8.05% excess** and **IR 0.90**. But it decomposes entirely into known premia: **~3.70pp size gap + ~4.25pp style exposure + ≈0 residual alpha**.
-> 7. The pipeline runs **daily**; the live selector reproduces the 385-period replay **exactly (50/50 names)**. A paper-trading record starts **2026-11-20** — the project's first genuine out-of-sample evidence.
+> 7. The pipeline runs **daily**; the live selector reproduces the 385-period replay **exactly (50/50 names)**. A paper-trading record began **2026-11-20** (NAV 1.0, cold start) — the project's first genuine out-of-sample evidence.
+> 8. **Replicated five classic anomalies** (short-term reversal, Amihud illiquidity, MAX, 52-week high, turnover) on the CSI 1000. **4/4 replicate at their own horizons, 3/4 at the 5-day production frequency — but none of them adds anything**: residual IC all below 0.015 and marginal t all below 2. The exposures were already inside the portfolio, so the decision was to **add no factor**. See `FACTOR_ZOO.md`.
 
 ---
 
@@ -335,7 +336,13 @@ Selection works in growth sectors and fails in **电气设备** — the very sec
 - `state.json` carries previous holdings so the industry-scoped threshold can work.
 - **Verification: on 2025-12-31 the live selector and the 385-period replay produce identical 50-name portfolios.**
 
-The production entry point is `legacy/daily_run.py` — a frozen copy. Research code may evolve; the live record must not. A `launchd` job runs it at 18:30 on weekdays, and from **2026-11-20** `paper/nav.csv` is the project's only out-of-sample record.
+The production entry point is `legacy/daily_run.py` — a frozen copy. Research code may evolve; the live record must not. A `launchd` job runs it at 18:30 on weekdays.
+
+The paper record starts **2026-11-20** with `nav = 1.0`; from that date `paper/nav.csv` is the project's only out-of-sample evidence. Three facts about its starting state, which must be quoted whenever the record is discussed:
+
+- **Cold start.** `state.json` was seeded at 2025-12-31 and not rolled forward; 216 trading days were skipped, so 2026-11-20 is a single-day switch from an eleven-month-old portfolio (72% one-way turnover). The first five trading days are a build-up period and are not performance.
+- **Frozen universe.** The stock-pool snapshot is 2025-12-31 (998 names) and is not updated monthly. The record therefore measures continuation on a frozen pool, not point-in-time 2026 constituents.
+- **First row was seeded by hand.** The daily writer initialises NAV in memory but does not persist the first row, so `2026-11-20,0.0,1.0` was appended manually. `state.nav` and the last row of `nav.csv` agree.
 
 ### 6.9 Product view
 
@@ -430,6 +437,8 @@ Sign-aligned so higher is better: `rev_5 = −5d return`, `turn_20 = −20d mean
 
 **Effect of neutralization:** mean Rank IC rises from **0.017** (raw) to **0.035** (neutralized).
 
+**Replication status.** Five of these candidates were re-implemented to the letter of their source papers and re-tested on both the production horizon (5 days) and each paper's own horizon. All five replicate at the paper horizon; only four at 5 days. None adds incremental information. Full table, specification fidelity and the frequency-dependence result are in [`FACTOR_ZOO.md`](FACTOR_ZOO.md).
+
 </details>
 
 ![Layers](figures/layers.png)
@@ -452,10 +461,13 @@ Sign-aligned so higher is better: `rev_5 = −5d return`, `turn_20 = −20d mean
 - **Industry classification is current, not point-in-time** (136 categories).
 - **Upstream data has known bad rows.** `.BJ` `pct_chg` reaches 200,400% (3.0% of rows).
 - **Everything through Phase 4 is in-sample.**
+- **The replicated anomalies add nothing.** Five classic price-volume anomalies replicate in this universe (4/4 at their own horizons) but deliver **0/4** incremental value: residual IC below 0.015, marginal t below 2 for every one.
+- **Frequency dependence is real.** The 52-week-high effect is zero at 5 days and roughly −9%/yr at six months. A single-horizon screen would have wrongly rejected it.
+- **The live universe is now eleven months stale** (2025-12-31 snapshot), which weakens any 2026 performance claim.
 
 ### 9.1 Out-of-sample status
 
-The full 2018–2025 sample has been used for factor construction, attribution, three candidate tests, the turnover study, risk attribution, and the product analysis. **None of it is out of sample.** From **2026-11-20**, `paper/nav.csv` is the first genuine out-of-sample record, written by the frozen `legacy/` copy.
+The full 2018–2025 sample has been used for factor construction, attribution, three candidate tests, the turnover study, risk attribution, and the product analysis. **None of it is out of sample.** From **2026-11-20**, `paper/nav.csv` is the first genuine out-of-sample record, written by the frozen `legacy/` copy, starting at NAV 1.0 from a cold start on a frozen 2025-12-31 universe (see §6.8).
 
 ---
 
@@ -470,10 +482,10 @@ The full 2018–2025 sample has been used for factor construction, attribution, 
 | Phase 4 | Attribution restated; risk attribution; QP ruled out | ✅ complete |
 | Phase 5 | Daily incremental pipeline + paper trading | ✅ built, verified 50/50 |
 | Phase 6 | Product sheet + market-neutral variant | ✅ complete |
-| Phase 7 | `factorlab` refactor (single implementation of score/select) | next |
-| Phase 8 | Factor zoo: 12 public factors through the same gate | planned |
+| Phase 7 | `factorlab` refactor (single implementation of score/select) | ✅ complete |
+| Phase 8 | Factor zoo: batch 1 (8 price-volume) done, 5 replicated; batch 2 (BP, gross-margin trend) planned | 🟡 partial |
 
-**Repositioning.** With no alpha across three attempts, the value is not in factor discovery but in **delivery**: controlling exposures, halving turnover, modelling impact honestly, and running the thing every day.
+**Repositioning.** With no alpha across three attempts, the value is not in factor discovery but in **delivery**: controlling exposures, halving turnover, modelling impact honestly, and running the thing every day — and, since Phase 8, **being willing to report that a replication succeeded and still adds nothing**.
 
 ---
 
@@ -506,14 +518,21 @@ The full 2018–2025 sample has been used for factor construction, attribution, 
     28_fix_cost_convention.py  Phase 3: two-sided cost, restated numbers
     30_risk_attribution.py     Phase 4: TE and Brinson decomposition
     31_export_replay_holdings.py  Phase 5: replay holdings + state seeding
-    32_backfill.py             Phase 5: 2026 backfill (atomic writes)
+    32_backfill.py             Phase 5: 2026 backfill (retry + self-check + exit code)
     33_product_metrics.py      Phase 6: product metrics, two benchmarks
     34_market_neutral.py       Phase 6: futures hedge + basis sensitivity
+    35_factor_zoo.py           Phase 8: paper replication, dual horizon, BH-FDR
+    36_new_factor.py           new-factor validation: trial log + FDR denominator
     daily_run.py               Phase 5: daily incremental pipeline
     factorlab/core.py          Phase 7: single implementation of data/score/select
+    factorlab/factors.py       Phase 7: data, alive-aware filling, FWL neutralization
+    factorlab/gate.py          Phase 7: gates, Newey-West t, quintile long-short
+    factorlab/io.py            Phase 7: atomic parquet writes
     tests/test_regression.py   Phase 7: must reproduce the published numbers
+    tests/test_neutralize_equiv.py  Phase 7: FWL vs lstsq (2.9e-14)
     legacy/                    frozen copy used by the live paper record
     PRODUCT_SHEET.md           one-page product fact sheet
+    FACTOR_ZOO.md              Phase 8: replication results and caveats
     RESEARCH_LOG.md            decisions, negative results, engineering lessons
     PROJECT_STATUS.md          current state, for handoff
 
@@ -562,6 +581,11 @@ Phase 6:
     python 33_product_metrics.py     # product view, two benchmarks
     python 34_market_neutral.py      # hedge + basis sensitivity
 
+Phase 7–8 (factorlab + replication):
+
+    python 35_factor_zoo.py --diag   # ~23 min, writes data/output_zoo/
+    python 36_new_factor.py --report # cumulative trial log + BH
+
 Phase 5 (daily operation):
 
     python daily_run.py --check
@@ -569,6 +593,8 @@ Phase 5 (daily operation):
     python legacy/daily_run.py --date 20251231 --force   # smoke test: expect 50/50
     python 31_export_replay_holdings.py      # reset state
     python legacy/daily_run.py               # live, from 2026 onward
+
+> `31_export_replay_holdings.py` **clears `paper/nav.csv`**. Never run it on a live trading day.
 
 ---
 
@@ -611,4 +637,4 @@ Phase 5 (daily operation):
 
 ## Data & Disclaimer
 
-Data via Tushare Pro. Independent research project for educational purposes, not investment advice. **No live trading record exists** — the paper-trading log begins 2026-11-20.
+Data via Tushare Pro. Independent research project for educational purposes, not investment advice. **A live paper-trading record exists and begins 2026-11-20.**
