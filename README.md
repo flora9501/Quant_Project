@@ -13,12 +13,12 @@
 > **TL;DR**
 >
 > 1. Built a point-in-time, survivorship-bias-free pipeline on CSI 1000 constituents (1,921 trading days, 945–998 stocks/day; **2,364 names** ever entered the index).
-> 2. Four public factors produce **2.01% annual excess** after honest costs (net 7.29%), with a long-short Sharpe of 1.47.
+> 2. Four public factors produce **2.01% annual excess** after honest costs against an equal-weight benchmark (net 7.29%), with a long-short Sharpe of 1.47.
 > 3. **The excess is fully explained by value and low-volatility exposures — and the residual alpha is significantly negative** (−4.45%, t = −2.63 before industry control; −6.85%, t = −4.28 after).
 > 4. Two further candidates were built and rejected on pre-registered gates: **accruals** (orthogonal at 0.054, IC 0.009, sign flips in two years) and **PEAD/SUE** (orthogonal at 0.099, IC 0.023 with seven positive years — but no significant portfolio improvement, paired t = −0.27 / +0.66).
-> 5. **What did work was implementation.** Industry-scoped score thresholds cut turnover from 2514% to 714% and lifted the industry-neutral portfolio from **0.22% to 4.25% excess** at 12 bp per side. Tracking error is **7.06%**, of which **77.2% comes from stock selection and only 4.2% from industry allocation**. Capacity is roughly **2.4 亿 CNY**.
-> 6. Against the **cap-weighted CSI 1000 index** — the benchmark a product would be measured against — excess is **8.50%** (IR 0.95). But it decomposes entirely into known premia: **~3.7pp size gap + ~4.2pp style exposure + ≈0 residual alpha**.
-> 7. The pipeline runs **daily**; the live selector reproduces the 385-period replay **exactly (50/50 names)**. A paper-trading record starts 2026-01 — the project's first genuine out-of-sample evidence.
+> 5. **What did work was implementation.** Industry-scoped score thresholds cut turnover from 2514% to 714% and lifted the industry-neutral portfolio from **0.22% to 4.25% excess**. Tracking error is **7.06%**, of which **77.2% comes from stock selection and only 4.2% from industry**. Capacity is about **2.4 亿 CNY**.
+> 6. Against the **cap-weighted CSI 1000 index** — the benchmark a product would be measured against — the portfolio earns **9.65%** with **8.05% excess** and **IR 0.90**. But it decomposes entirely into known premia: **~3.70pp size gap + ~4.25pp style exposure + ≈0 residual alpha**.
+> 7. The pipeline runs **daily**; the live selector reproduces the 385-period replay **exactly (50/50 names)**. A paper-trading record starts **2026-11-20** — the project's first genuine out-of-sample evidence.
 
 ---
 
@@ -44,7 +44,7 @@
 
 ![NAV](figures/nav.png)
 
-> Final convention: **two-sided cost** (every trade charged 12 bp) and **buy-and-hold weights** between rebalances. The earlier single-sided-cost results are in [Appendix A](#appendix-a-legacy-results-single-sided-cost); do not compare the two directly.
+> Final convention: **two-sided cost** (every trade charged 12 bp), **buy-and-hold weights** between rebalances, and **NaN-aware scores** (a stock outside the constituents on a given day is missing, not zero). Earlier single-sided-cost results are in [Appendix A](#appendix-a-legacy-results-single-sided-cost); do not compare the two directly.
 
 ### 1.1 Long-only, net of cost
 
@@ -53,7 +53,7 @@
 | EW Baseline | 2437% | 13.75% | 5.86% | 7.29% | **2.01%** | 17.50% |
 | EW + threshold | 619% | 10.77% | 1.49% | 9.14% | 3.77% | 16.60% |
 | Stratified Baseline | 2514% | 11.96% | 6.05% | 5.41% | **0.22%** | 1.35% |
-| **Stratified + threshold** | **714%** | 11.54% | **1.72%** | **9.65%** | **4.25%** | **1.35%** |
+| **Stratified + threshold** | **714%** | 11.54% | **1.71%** | **9.65%** | **4.25%** | **1.35%** |
 | *Benchmark (EW universe)* | — | *5.18%* | — | — | — | — |
 
 > Gross is geometric annualised; cost is arithmetic annualised — they do not subtract exactly.
@@ -292,6 +292,8 @@ Square-root impact: `rate = 0.7 × σ_daily × sqrt(Q / ADV) + 3 bp`, σ and ADV
 
 The cost convention alone accounts for about −2.9 pp. Phase 1's 4.38% excess is **2.01%**, and residual alpha moves from −2.18% (t=−1.35, insignificant) to **−4.45% (t=−2.63, significant)**.
 
+A separate alignment fixed a score-semantics divergence: the incremental pipeline had been filling "not a constituent" with zero, which drags a stock's smoothed score toward the median. Both paths now use NaN-aware scoring, and the live selector reproduces the replay at 50/50.
+
 ### 6.7 Risk attribution
 
 5-day Brinson decomposition (384 periods, identity residual 3e-18).
@@ -333,7 +335,7 @@ Selection works in growth sectors and fails in **电气设备** — the very sec
 - `state.json` carries previous holdings so the industry-scoped threshold can work.
 - **Verification: on 2025-12-31 the live selector and the 385-period replay produce identical 50-name portfolios.**
 
-A `launchd` job runs it at 18:30 on weekdays. From the first trading day of 2026, `paper/nav.csv` is the project's only out-of-sample record.
+The production entry point is `legacy/daily_run.py` — a frozen copy. Research code may evolve; the live record must not. A `launchd` job runs it at 18:30 on weekdays, and from **2026-11-20** `paper/nav.csv` is the project's only out-of-sample record.
 
 ### 6.9 Product view
 
@@ -341,39 +343,40 @@ Reported against the cap-weighted CSI 1000 index — the benchmark a product wou
 
 | | vs EW universe | vs CSI 1000 |
 |:---|---:|---:|
-| Portfolio ann. return | 10.10% | 10.10% |
+| Portfolio ann. return | 9.65% | 9.65% |
 | Portfolio ann. vol | 21.68% | 21.68% |
-| Sharpe | 0.47 | 0.47 |
+| Sharpe | 0.45 | 0.45 |
+| Portfolio max drawdown | −38.91% | −38.91% |
 | Benchmark ann. | 5.18% | **1.48%** |
-| **Ann. excess** | 4.68% | **8.50%** |
-| Tracking error | 6.98% | **8.94%** |
-| **Information ratio** | 0.67 | **0.95** |
-| Monthly win rate | 57.3% | **60.4%** |
-| Excess max drawdown | −10.69% | −13.45% |
+| **Ann. excess** | 4.25% | **8.05%** |
+| Tracking error | 6.97% | **8.94%** |
+| **Information ratio** | 0.61 | **0.90** |
+| Monthly win rate | 54.2% | **59.4%** |
+| Excess max drawdown | −10.62% | −13.84% |
 | Beta | 0.85 | **0.82** |
 | Up capture | 0.84 | 0.82 |
-| Down capture | 0.80 | 0.76 |
+| Down capture | 0.81 | 0.76 |
 
-**The 8.50% decomposes entirely into known premia:**
+**The 8.05% decomposes entirely into known premia:**
 
 | Source | Contribution | Nature |
 |:---|---:|:---|
-| Equal-weight vs cap-weighted (size gap) | **+3.7pp** | size premium |
+| Equal-weight vs cap-weighted (size gap) | **+3.70pp** | size premium |
 | Value (EP) exposure | ~+2.5pp | style beta |
 | Low-volatility exposure | ~+1.7pp | style beta |
 | Residual selection | **≈ 0** (regression: −4.45%, t=−2.63) | none |
-| **Total** | **8.50%** | |
+| **Total** | **8.05%** | |
 
-**Market-neutral variant.** Short IM against the portfolio, hedge ratio = rolling 60-day beta (mean 0.80, daily correlation to the index 0.934):
+**Market-neutral variant.** Short IM, hedge ratio = rolling 60-day beta (mean 0.80, correlation to the index 0.934):
 
 | Annualised basis | Hedged return | Vol | Max DD |
 |---:|---:|---:|---:|
-| 0% | **+8.46%** | 7.60% | −10.56% |
-| 5% | +3.18% | 7.60% | −12.13% |
-| **8%** | **+0.13%** | 7.60% | −14.69% |
-| 12% | −3.80% | 7.60% | −28.16% |
+| 0% | **+7.99%** | 7.61% | −10.41% |
+| 5% | +2.72% | 7.61% | −12.17% |
+| **8%** | **−0.32%** | 7.61% | −14.97% |
+| 12% | −4.22% | 7.61% | −30.54% |
 
-**Breakeven basis: 8.46%.** IM's annualised discount has ranged roughly 5–10% in recent years, so the hedge works only when the discount is narrow.
+**Breakeven basis: 7.99%.** IM's annualised discount has ranged roughly 5–10% recently, so the hedge works only when the discount is narrow. A realised-futures backtest (IC→IM stitched) gives 7.99% / vol 9.98% / Sharpe 0.80, matching the synthetic zero-basis case.
 
 > The hedge is against a **cap-weighted** index while the portfolio is equal-weighted, so ~3.7pp of size exposure survives hedging. **This is "long small-cap, short large-cap", not pure market neutrality.**
 
@@ -403,7 +406,7 @@ Sign-aligned so higher is better: `rev_5 = −5d return`, `turn_20 = −20d mean
       → OLS residualization on industry dummies + log circulating market cap
       → z-score
 
-**Composite** — equal weight of the three-period smoothed scores (`mean(score_t, score_{t−5}, score_{t−10})`).
+**Composite** — equal weight of the three-period smoothed scores (`mean(score_t, score_{t−5}, score_{t−10})`), NaN-aware: a stock absent from the constituents contributes no observation rather than a zero.
 
 **Portfolio** — top 50, industry-stratified, 5-day rebalance, buy-and-hold between rebalances, cost charged on every trade.
 
@@ -438,11 +441,11 @@ Sign-aligned so higher is better: `rev_5 = −5d return`, `turn_20 = −20d mean
 ## 9. Limitations
 
 - **The residual alpha is significantly negative, not zero.** −4.45% (t=−2.63) uncontrolled, −6.85% (t=−4.28) controlled. Three independent attempts found no source of alpha.
-- **The 8.50% figure against the index is not alpha.** ~3.7pp is a size gap, ~4.2pp is style exposure, residual is ≈ 0 (§6.9).
+- **The 8.05% figure against the index is not alpha.** ~3.70pp is a size gap, ~4.25pp is style exposure, residual is ≈ 0.
 - **The headline is a cost story.** Roughly three quarters of the Phase 3 gain comes from lower trading costs.
-- **The hit rate is thin.** 53.4% of 5-day periods are positive.
+- **The hit rate is thin.** 53.4% of 5-day periods are positive; 54.2% of months.
 - **Capacity is small.** About 2.4 亿 on CSI 1000 mid-caps.
-- **The market-neutral variant is a basis trade.** Breakeven discount 8.46%; IM has traded at 5–10% in recent years, and the residual size exposure survives hedging.
+- **The market-neutral variant is a basis trade.** Breakeven discount 7.99%; IM has traded at 5–10% recently, and size exposure survives hedging.
 - **Freshness beats breadth, and it is fragile.** Usable Δ range 0.25–0.50.
 - **The impact model is conservative.** Single-day execution assumed.
 - **The live pipeline uses a frozen universe** (2025-12-31 snapshot); monthly constituent updates are not automated.
@@ -452,7 +455,7 @@ Sign-aligned so higher is better: `rev_5 = −5d return`, `turn_20 = −20d mean
 
 ### 9.1 Out-of-sample status
 
-The full 2018–2025 sample has been used for factor construction, attribution, three candidate tests, the turnover study, risk attribution, and the product analysis. **None of it is out of sample.** From **2026-01**, `paper/nav.csv` provides the first genuine out-of-sample record, written by a frozen copy of the code.
+The full 2018–2025 sample has been used for factor construction, attribution, three candidate tests, the turnover study, risk attribution, and the product analysis. **None of it is out of sample.** From **2026-11-20**, `paper/nav.csv` is the first genuine out-of-sample record, written by the frozen `legacy/` copy.
 
 ---
 
@@ -467,7 +470,7 @@ The full 2018–2025 sample has been used for factor construction, attribution, 
 | Phase 4 | Attribution restated; risk attribution; QP ruled out | ✅ complete |
 | Phase 5 | Daily incremental pipeline + paper trading | ✅ built, verified 50/50 |
 | Phase 6 | Product sheet + market-neutral variant | ✅ complete |
-| Phase 7 | `factorlab` refactor (freeze `legacy/` for the live record) | next |
+| Phase 7 | `factorlab` refactor (single implementation of score/select) | next |
 | Phase 8 | Factor zoo: 12 public factors through the same gate | planned |
 
 **Repositioning.** With no alpha across three attempts, the value is not in factor discovery but in **delivery**: controlling exposures, halving turnover, modelling impact honestly, and running the thing every day.
@@ -507,6 +510,8 @@ The full 2018–2025 sample has been used for factor construction, attribution, 
     33_product_metrics.py      Phase 6: product metrics, two benchmarks
     34_market_neutral.py       Phase 6: futures hedge + basis sensitivity
     daily_run.py               Phase 5: daily incremental pipeline
+    factorlab/core.py          Phase 7: single implementation of data/score/select
+    tests/test_regression.py   Phase 7: must reproduce the published numbers
     legacy/                    frozen copy used by the live paper record
     PRODUCT_SHEET.md           one-page product fact sheet
     RESEARCH_LOG.md            decisions, negative results, engineering lessons
@@ -561,9 +566,9 @@ Phase 5 (daily operation):
 
     python daily_run.py --check
     python 31_export_replay_holdings.py      # seed state
-    python daily_run.py --date 20251231 --force   # smoke test: expect 50/50
+    python legacy/daily_run.py --date 20251231 --force   # smoke test: expect 50/50
     python 31_export_replay_holdings.py      # reset state
-    python daily_run.py                      # from 2026 onward
+    python legacy/daily_run.py               # live, from 2026 onward
 
 ---
 
@@ -606,4 +611,4 @@ Phase 5 (daily operation):
 
 ## Data & Disclaimer
 
-Data via Tushare Pro. Independent research project for educational purposes, not investment advice. **No live trading record exists** — the paper-trading log begins 2026-01.
+Data via Tushare Pro. Independent research project for educational purposes, not investment advice. **No live trading record exists** — the paper-trading log begins 2026-11-20.
