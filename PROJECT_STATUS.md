@@ -1,7 +1,7 @@
 # PROJECT STATUS
 
 > 项目交接文档。换人接手或重开会话时先读这里，30 秒可恢复上下文。
-> 最后更新：2025-11-20（Phase 3 完成，数字已按双边成本口径重算）
+> 最后更新：2025-11-20（Phase 3 + 归因重算完成，全部数字为双边成本口径）
 
 ## 环境
 
@@ -23,8 +23,20 @@
 容量约 **2.4 亿**（1 亿 +1.91%，2 亿 +0.42%，3 亿 −0.71%）。
 基线构造在任何 AUM 下超额为负，不可投资。
 
-**Phase 1 头条已修订**：9.79% → 7.29%，超额 4.38% → 2.01%。
-原因：权重口径 +0.7pp、成本口径 −2.9pp（旧代码只对单边换手收一次费）。
+**归因（08/09 重算后）**
+
+| | 行业未控 | 行业已控 |
+|---|---:|---:|
+| alpha（年化） | **−4.45%** | **−6.85%** |
+| alpha t | **−2.63** | **−4.28** |
+| value β | 0.2979 | 0.2813 |
+| low-vol β | 0.2774 | 0.3281 |
+| R² | 0.526 | 0.595 |
+
+残差化重建组合的超额 **−9.71%**（净收益 −5.33%）。
+**alpha 已跨过显著性门槛——不是"没有 alpha"，是"显著负 alpha"。**
+
+**Phase 1 头条已修订**：9.79% → 7.29%，超额 4.38% → 2.01%（成本口径 −2.9pp、权重口径 +0.7pp）。
 
 ## 目录与关键数据形状
 
@@ -34,13 +46,15 @@
 | `data/raw/daily_basic_YYYY.parquet` | 每日指标 | turnover_rate / circ_mv / pe_ttm |
 | `data/raw/adj_factor_YYYY.parquet` | 复权因子 | 8 个文件 |
 | `data/raw_fina/{api}_part*.parquet` | 财务三表原始 | 每表 25–35 万行，保留 update_flag 0/1 重复行 |
-| `data/ref/` | stock_basic / stock_delisted / namechange | 两者**都带 industry** |
+| `data/ref/` | stock_basic / stock_delisted / namechange | **两者都带 industry** |
 | `data/panel/tradable.parquet` | **宽表** | `(1921, 5696)`，index = `YYYYMMDD` **字符串** |
 | `data/panel/factors.parquet` | **长表** | `(1902858, 8)`，trade_date 为 **str** |
-| `data/panel/factors_neutral.parquet` | 中性化后 | 07/19/20/24/25/26/27/28 都读它 |
+| `data/panel/factors_neutral.parquet` | 中性化后 | 07/08/09/19…28 都读它 |
 | `data/panel/factor_accruals.parquet` | Phase 2a | `(1827435, 7)` |
 | `data/panel/factor_pead.parquet` | Phase 2b | `(1119547, 7)` |
-| `data/output_turnover/` | Phase 3 输出 | `sensitivity_v2.csv` / `final_numbers.csv` / `capacity.csv` |
+| `data/output_attribution/` | 归因输出 | `excess_nav_compare.png` 需拷到 `figures/` |
+| `data/output_style/` | 风格中性 | `nav_compare.png`、`style_premiums.png` |
+| `data/output_turnover/` | Phase 3 | `sensitivity_v2.csv` / `final_numbers.csv` / `capacity.csv` |
 
 ## 脚本状态
 
@@ -48,18 +62,18 @@
 |---|---|
 | 01–06 | ✅ universe 1921 天/日均 991；factors 1,902,858 行；中性化 IC 0.017→0.035 |
 | 07_backtest | ✅ 5 变体（旧口径，仅作历史对照） |
-| 08_attribution | ⚠️ **需在双边成本口径下重跑**，现有 alpha −2.18% / −4.37% 偏乐观 |
-| 09_style_neutral | ⚠️ 同上 |
+| 08_attribution | ✅ 双边口径：alpha −4.45% (t=−2.63) / −6.85% (t=−4.28) |
+| 09_style_neutral | ✅ 残差化组合超额 −9.71%，净收益 −5.33% |
 | 10–12 | ✅ 应计项，REJECT |
 | 14–18 | ✅ PEAD/SUE，REJECT |
 | 19 / 20 / 24 / 25 | ✅ 换手诊断与两轮方案 |
 | 26_sensitivity | ✅ Δ 平台 + placebo 归因 |
-| 27_impact_cost | ✅ 容量曲线 |
+| 27_impact_cost | ✅ 容量约 2.4 亿 |
 | 28_fix_cost_convention | ✅ 最终数字（双边口径） |
 
 ## 核心结论（四条）
 
-1. **Phase 1**：smart beta，无 alpha。超额来自 value（β 0.285）+ lowvol（β 0.288）。
+1. **Phase 1**：smart beta，**显著负 alpha**。value β 0.298 / lowvol β 0.277；剥离后 alpha −4.45%（t=−2.63）/ −6.85%（t=−4.28）。
 2. **Phase 2a 应计项**：相关性 0.054（真新维度），但 IC 0.0093、两年为负 → 拒绝。**信号太弱。**
 3. **Phase 2b PEAD/SUE**：截面全过（IC 0.023@20d、七年同号），组合不显著（t = −0.27 / +0.66）→ 拒绝。**信号期与调仓期错配。**
 4. **Phase 3 换手控制**：配额守恒的分数门槛把换手从 2514% 降到 714%，超额从 0.22% 升到 **4.25%**。其中 **+8.03pp 来自成本、+2.57pp 来自信号**（同换手配对）。
@@ -73,9 +87,9 @@
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| 1 | **重跑 08 / 09** | 用双边成本口径重算 alpha，预期更负，结论方向不变 |
-| 2 | 复核 `figures/` | 4 张图需与最新数字一致，`nav.png` 已被 07 覆盖 |
-| 3 | 补 2026 数据后做 OOS | 唯一的样本外验证机会 |
+| 1 | 更新 `figures/` | `excess_nav_compare.png`、`nav_compare.png` 已重新生成，需覆盖旧图 |
+| 2 | 2026 数据后做 OOS | 唯一的样本外机会 |
+| 3 | 实盘/模拟盘记录 | 目前完全没有 |
 | — | 不再尝试 | 应计项与 PEAD 的任何变体 |
 
 ## 已知坑（接手必读）
@@ -92,11 +106,11 @@
 10. **日期类型有两种**：`tradable`/新因子表是 datetime64，`factors`/`daily` 是 str。
 11. **覆盖率分母要写清**：SUE 10.2% 是全网格口径，在册口径 58.8%。
 12. **`combine()` 是 fillna(0) 后相加**，不是取均值。
-13. **`int(0.0012 * 1e4)` = 11**，别用 `int()` 把浮点转标签，用整数常量。
+13. **`int(0.0012 * 1e4)` = 11**，别用 `int()` 把浮点转标签。
 14. **成本必须双边计费**：`Σ|Δw| × c`，不是 `单边换手 × c`。旧代码少收一半。
 15. **换手率汇报要用 `to.replace(0, np.nan).mean()`**，否则被非调仓日的 0 摊薄 5 倍。
 
 ## 一句话交接
 
-四次迭代后结论稳定：**没有 alpha，但有一个 2.4 亿容量、714% 换手、12bp 下 4.25% 超额的行业中性 smart-beta 组合**。
+四次迭代后结论稳定：**显著负 alpha 的 smart-beta 组合，靠换手控制把 12bp 下超额从 0.22% 做到 4.25%，容量约 2.4 亿**。
 收益的 3/4 来自成本控制，1/4 来自信号时效性——这个比例必须诚实地说出来。

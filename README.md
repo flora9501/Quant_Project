@@ -14,9 +14,9 @@
 >
 > 1. Built a point-in-time, survivorship-bias-free pipeline on CSI 1000 constituents (1,921 trading days, 945–998 stocks/day).
 > 2. Four public factors produce **2.01% annual excess** after honest costs (net 7.29%), with a long-short Sharpe of 1.47.
-> 3. **The excess is fully explained by value and low-volatility exposures.** Residual alpha is −2.18% (t = −1.35) before industry control and −4.37% (t = −2.91) after — measured under the original cost convention, so the true figures are more negative. **This is a smart-beta portfolio, not an alpha strategy.**
+> 3. **The excess is fully explained by value and low-volatility exposures — and the residual alpha is significantly negative** (−4.45%, t = −2.63 before industry control; −6.85%, t = −4.28 after). **This is a smart-beta portfolio that destroys value on a risk-adjusted basis.**
 > 4. Two further candidates were built and rejected on pre-registered gates: **accruals** (orthogonal at 0.054, IC 0.009, sign flips in two years) and **PEAD/SUE** (orthogonal at 0.099, IC 0.023 with seven positive years — but no significant portfolio improvement, paired t = −0.27 / +0.66).
-> 5. **What did work was implementation.** Replacing naive re-selection with industry-scoped score thresholds cut turnover from 2514% to 714% and lifted the industry-neutral portfolio from **0.22% to 4.25% excess** at 12 bp per side. Capacity is roughly **2.4 亿 CNY**; the naive construction is uninvestable at any size.
+> 5. **What did work was implementation.** Industry-scoped score thresholds cut turnover from 2514% to 714% and lifted the industry-neutral portfolio from **0.22% to 4.25% excess** at 12 bp per side. Capacity is roughly **2.4 亿 CNY**; the naive construction is uninvestable at any size.
 
 ---
 
@@ -94,18 +94,18 @@
 
 ![Excess NAV](figures/excess_nav_compare.png)
 
-Excess return regressed on style factor premiums (no market term), original cost convention:
+Excess return regressed on style factor premiums (no market term). Costs are charged on every trade (two-sided, 12 bp per side) and weights drift between rebalances:
 
 | | A: industry uncontrolled | B: industry controlled |
 |:---|---:|---:|
-| **alpha (ann.)** | **−2.18%** | **−4.37%** |
-| **alpha t-stat** | **−1.35** | **−2.91** |
-| size β | 0.0004 (t=0.05) | −0.0024 (t=−0.35) |
-| value β | **0.2845** (t=17.55) | **0.2701** (t=17.85) |
-| low-vol β | **0.2879** (t=26.86) | **0.3378** (t=33.75) |
-| R² | 0.554 | 0.629 |
+| **alpha (ann.)** | **−4.45%** | **−6.85%** |
+| **alpha t-stat** | **−2.63** | **−4.28** |
+| size β | 0.0021 (t=0.28) | −0.0002 (t=−0.02) |
+| value β | **0.2979** (t=17.46) | **0.2813** (t=17.43) |
+| low-vol β | **0.2774** (t=24.60) | **0.3281** (t=30.74) |
+| R² | 0.526 | 0.595 |
 
-> These regressions were run before the cost convention was corrected. Doubling the cost removes roughly 2.9 pp per year from the excess series of the high-turnover variants (turnover is stable over time, so the effect is close to a constant shift). That makes the residual alpha **more negative**, not less. The direction of the conclusion is unchanged; the magnitude in this table is optimistic.
+Both alphas are significantly **negative**. This is a stronger statement than "no alpha": after removing value and low-volatility exposure, the portfolio destroys value rather than merely failing to add it.
 
 Style factor premiums over the same window:
 
@@ -115,9 +115,30 @@ Style factor premiums over the same window:
 | value (high EP − low EP) | 7.78% |
 | low-vol (low σ − high σ) | **13.08%** |
 
-**Interpretation.** The entire excess is value plus low-volatility exposure. Strip those two and the strategy returns nothing. An independent test — daily residualization of the composite score on size/value/volatility, rebalanced into a new portfolio — produced **−5.44% excess**, consistent with the regression result.
+**Interpretation.** The excess is value plus low-volatility exposure. Strip those two and the strategy returns nothing — in fact less than nothing.
 
-> Two different methods reach the same conclusion.
+An independent test: the composite score is residualized daily against size, value and volatility, and the residuals are rebalanced into a fresh portfolio.
+
+![Style Neutral](figures/nav_compare.png)
+
+| | Original | Style-neutral | Benchmark |
+|:---|---:|---:|---:|
+| Net return (ann.) | 7.29% | **−5.33%** | 5.18% |
+| Excess (ann.) | +2.01% | **−9.71%** | — |
+| Residual alpha | −4.45% (t=−2.63) | −5.43% (t=−1.86) | — |
+
+> Two different methods — portfolio construction and return-level regression — reach the same conclusion. The finding is robust.
+
+### What industry control does *not* change
+
+| Exposure | A (uncontrolled) | B (controlled) | Industry contribution |
+|:---|---:|---:|---:|
+| value β | 0.298 | 0.281 | **6%** |
+| low-vol β | 0.277 | 0.328 | **−18%** (rose) |
+
+Value and low-volatility loadings are **stock-level, not industry-driven**. Controlling industry does not remove them; if anything it makes the low-vol loading purer.
+
+**Consequence:** residual alpha goes from −4.45% to −6.85% and the t-stat from −2.63 to −4.28. The industry bets in the uncontrolled portfolio were partly masking weak stock selection — once removed, the negative alpha becomes unambiguous.
 
 ---
 
@@ -134,7 +155,12 @@ Top-N equal weighting leaves industry exposure uncontrolled: maximum deviation f
 
 Replacing top-N with **stratified sampling** — quotas allocated to each industry in proportion to its benchmark weight, stocks selected by score within each bucket — caps the deviation at **1.35%**.
 
-**Consequence, and the reason it matters:** under the corrected cost convention the unconstrained portfolio earns 2.01% excess while the industry-neutral one earns only 0.22%. Industry control looks expensive — until turnover is fixed. After Phase 3's threshold rule, the industry-neutral version earns **4.25%** with 1.35% deviation, beating the unconstrained version outright (§6).
+| | Excess (restated) | Ind. Dev (mean / max) |
+|:---|---:|---:|
+| Top 50, equal weight | 2.01% | 7.37% / 17.50% |
+| Top 50, stratified | 0.22% | **1.26% / 1.35%** |
+
+**Industry control looks expensive — until turnover is fixed.** The stratified portfolio gives up 1.8 pp of excess to achieve a defensible risk profile. But after Phase 3's threshold rule it earns **4.25%** at 1.35% deviation, beating the unconstrained version outright (§6).
 
 ---
 
@@ -309,7 +335,7 @@ Square-root impact model: `rate = 0.7 × σ_daily × sqrt(Q / ADV) + 3 bp`, with
 | + buy-and-hold weights | 10.48% |
 | + two-sided cost (**final**) | **7.29%** |
 
-The cost convention alone accounts for about −2.9 pp. Phase 1's reported 4.38% excess is **2.01%** under the corrected convention.
+The cost convention alone accounts for about −2.9 pp. Phase 1's reported 4.38% excess is **2.01%** under the corrected convention, and its residual alpha moves from −2.18% (t=−1.35, insignificant) to **−4.45% (t=−2.63, significant)**.
 
 ---
 
@@ -371,7 +397,7 @@ All sign-aligned so that higher is better: `rev_5 = −5d return`, `turn_20 = �
 
 ## 9. Limitations
 
-- **No alpha, after three independent attempts.** Accruals failed on signal strength; PEAD/SUE passed every statistical gate but produced no significant portfolio improvement.
+- **The residual alpha is significantly negative, not zero.** After value and low-volatility exposure, the portfolio destroys about 4.5 pp (uncontrolled) to 6.9 pp (industry-controlled) per year. Three independent attempts found no source of alpha.
 - **The headline is a cost story.** Roughly three quarters of the Phase 3 gain comes from lower trading costs, not better stock selection (§6.4).
 - **Capacity is small.** About 2.4 亿 on CSI 1000 mid-caps with a 5-day rebalance. This is a self-managed book, not an asset-management product.
 - **Freshness beats breadth, and it is fragile.** The usable Δ range is 0.25–0.50; at 0.10 the strategy barely clears 30 bp costs.
@@ -379,7 +405,7 @@ All sign-aligned so that higher is better: `rev_5 = −5d return`, `turn_20 = �
 - **Industry classification is current, not point-in-time** (136 categories, minor look-ahead).
 - **Upstream data has known bad rows.** Beijing Stock Exchange `.BJ` `pct_chg` contains absurd values (max 200,400%; 3.0% of all rows). Outside CSI 1000, so it never enters the sample, but any full-market computation must filter to `.SH` / `.SZ`.
 - **Fundamental data is as-reported-at-first-announcement.** Conservative, but not identical to a vendor's point-in-time database.
-- **Everything above is in-sample.** The 2018–2025 window has been used exhaustively; no out-of-sample validation exists yet (§9.1).
+- **Everything above is in-sample.** The 2018–2025 window has been used exhaustively; no out-of-sample validation exists yet.
 
 ### 9.1 Out-of-sample status
 
@@ -394,10 +420,12 @@ The full sample has been used for factor construction, attribution, three candid
 | Phase 1 | Factor research + attribution | ✅ complete |
 | Phase 2a | Accruals factor | ❌ tested, rejected |
 | Phase 2b | PEAD / SUE | ❌ tested, rejected |
-| Phase 3 | Turnover control + capacity | ✅ complete (this release) |
-| Phase 4 | Re-run attribution under the corrected cost convention | next |
+| Phase 3 | Turnover control + capacity | ✅ complete |
+| Phase 4 | Attribution restated under two-sided cost | ✅ complete |
 | — | Live paper-trading record | not started |
 | — | Alternative data (analyst revisions) | parked — needs a 10000-point tier |
+
+**Repositioning.** With no alpha across three attempts, the remaining value is not in factor discovery but in **delivery**: controlling exposures, halving turnover, and modelling impact honestly. The project's contribution is a candid measurement of what a public-data CSI 1000 strategy can and cannot do.
 
 ---
 
@@ -411,8 +439,8 @@ The full sample has been used for factor construction, attribution, three candid
     05_single_factor_test.py   IC / quintile / decay
     06_preprocess_factors.py   winsorize + neutralize + z-score
     07_backtest.py             portfolio construction, cost, five variants
-    08_attribution.py          A/B attribution (industry controlled vs not)
-    09_style_neutral_test.py   style-neutral diagnostics
+    08_attribution.py          A/B attribution (two-sided cost, buy-and-hold)
+    09_style_neutral_test.py   style-neutral diagnostics (two-sided cost)
     10_pull_fina.py            Phase 2: three-statement fetch (8 threads)
     11_build_accruals.py       Phase 2a: accruals factor
     12_check_accruals.py       Phase 2a: correlation / IC / quintile gate
@@ -446,8 +474,8 @@ The full sample has been used for factor construction, attribution, three candid
     python 05_single_factor_test.py
     python 06_preprocess_factors.py
     python 07_backtest.py
-    python 08_attribution.py
-    python 09_style_neutral_test.py
+    python 08_attribution.py         # two-sided cost
+    python 09_style_neutral_test.py  # two-sided cost
 
 Phase 2 (reproduces §5):
 
