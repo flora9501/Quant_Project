@@ -2,6 +2,17 @@
 """
 唯一的策略实现。data / smooth / select / replay 各只有一份。
 研究脚本和未来的因子动物园全部 import 这里，不再各写一遍。
+
+参数化约定
+    REBAL 是默认值（5）。replay(..., rebal=N) 可覆盖，用于持有期实验（37 号）。
+    smooth_score(s, rebal=N) 同样可覆盖 —— 平滑窗口应与调仓周期同步，
+    否则等于用 5 日周期的平滑去喂一个 20 日周期的组合。
+
+成本口径（重要）
+    cost 可以是标量，也可以是 DataFrame（日期 × 代码，逐股成本）。
+    net = gross − Σ|Δw| · cost
+    Σ|Δw| 同时包含买入与卖出，所以 cost 已经是"每单位成交额的成本"，
+    cost_amt 里不要再乘 COST_MULT。标量路径与旧版逐位等价。
 """
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -155,24 +166,41 @@ class Replay:
     turnover: pd.Series
     holdings: dict = field(default_factory=dict)
     ind_dev: dict = field(default_factory=dict)
+    rebal: int = REBAL
+    cost_amt: pd.Series | None = None      # ★ 逐日成本（收益率单位，已含双边）
 
     def ann(self, cost_mult=COST_MULT):
         r = self.net
         return (1 + r).cumprod().iloc[-1] ** (252 / len(r)) - 1
 
     def ann_turnover(self):
-        return float(self.turnover.replace(0, np.nan).mean() * (252 / REBAL))
+        return float(self.turnover.replace(0, np.nan).mean() * (252 / self.rebal))
+
+    def cost_pp(self):
+        """年化成本（百分点）"""
+        if self.cost_amt is None:
+            return np.nan
+        return float(self.cost_amt.mean() * 252 * 100)
 
 
-def replay(score, panel, top_n=TOP_N, thresh=THRESH, cost=COST):
+def replay(score, panel, top_n=TOP_N, thresh=THRESH, cost=COST, rebal=REBAL):
+    """rebal: 调仓周期（交易日）。默认 REBAL=5。
+
+    cost: 标量（每单位成交额的成本）或 DataFrame（日期 × 代码，逐股成本）。
+          标量路径与旧版完全等价：net = gross - Σ|Δw| * cost
+    """
+    if rebal <= 0:
+        raise ValueError(f"rebal 必须为正整数，收到 {rebal}")
+
     w_live = pd.Series(0.0, index=panel.cols)
     held = []
     gross = pd.Series(0.0, index=panel.idx)
     to_s = pd.Series(0.0, index=panel.idx)
+    cost_amt = pd.Series(0.0, index=panel.idx)          # ★
     holdings, dev = {}, {}
 
     for i, d in enumerate(panel.idx):
-        if i % REBAL == 0:
+        if i % rebal == 0:
             s = score.loc[d].where(panel.mask.loc[d]).dropna()
             if len(s) >= top_n:
                 picks = quota_select(s, panel.industry, held, top_n, thresh)
@@ -180,7 +208,16 @@ def replay(score, panel, top_n=TOP_N, thresh=THRESH, cost=COST):
                     w_new = pd.Series(1.0 / len(picks), index=picks).reindex(panel.cols).fillna(0.0)
                     tot = w_live.sum()
                     w_drift = (w_live / tot) if tot > 0 else w_live
-                    to_s.loc[d] = float((w_new - w_drift).abs().sum() / 2)
+
+                    dw = (w_new - w_drift).abs()                    # ★
+                    to_s.loc[d] = float(dw.sum() / 2)
+
+                    if isinstance(cost, pd.DataFrame):              # ★ 逐股成本
+                        row = cost.loc[d] if d in cost.index else pd.Series(dtype=float)
+                        cvec = row.reindex(dw.index).fillna(COST)
+                    else:                                           # 标量（旧口径）
+                        cvec = cost
+                    cost_amt.loc[d] = float((dw * cvec).sum())
 
                     pw = (pd.Series(1.0 / len(picks), index=picks)
                             .groupby(panel.industry.reindex(picks)).sum())
@@ -195,8 +232,10 @@ def replay(score, panel, top_n=TOP_N, thresh=THRESH, cost=COST):
         gross.loc[d] = float((w_live * r).sum())
         w_live = w_live * (1 + r)
 
-    net = (gross - to_s * cost * COST_MULT).iloc[:-1]
-    return Replay(net=net, gross=gross, turnover=to_s, holdings=holdings, ind_dev=dev)
+    net = (gross - cost_amt).iloc[:-1]                          # ★
+    return Replay(net=net, gross=gross, turnover=to_s,
+                  holdings=holdings, ind_dev=dev, rebal=rebal,
+                  cost_amt=cost_amt)                            # ★
 
 
 def benchmark(panel):
