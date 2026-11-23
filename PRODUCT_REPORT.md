@@ -16,13 +16,14 @@
 > 2. Four public factors produce **2.01% annual excess** after honest costs against an equal-weight benchmark (net 7.29%), with a long-short Sharpe of 1.47.
 > 3. **The excess is fully explained by value and low-volatility exposures — and the residual alpha is significantly negative** (−4.45%, t = −2.63 before industry control; −6.85%, t = −4.28 after).
 > 4. Two further candidates were built and rejected on pre-registered gates: **accruals** (orthogonal at 0.054, IC 0.009, sign flips in two years) and **PEAD/SUE** (orthogonal at 0.099, IC 0.023 with seven positive years — but no significant portfolio improvement, paired t = −0.27 / +0.66).
-> 5. **What did work was implementation.** Industry-scoped score thresholds cut turnover from 2514% to 714% and lifted the industry-neutral portfolio from **0.22% to 4.25% excess**. Tracking error is **7.06%**, of which **77.2% comes from stock selection and only 4.2% from industry**. Capacity is about **2.4 亿 CNY**.
+> 5. **What did work was implementation.** Industry-scoped score thresholds cut turnover from 2514% to 714% and lifted the industry-neutral portfolio from **0.22% to 4.25% excess**. Tracking error is **7.06%**, of which **77.2% comes from stock selection and only 4.2% from industry**. Capacity is about **2.4 亿 CNY at N=50**, and **12–20 亿 at N=400**.
 > 6. Against the **cap-weighted CSI 1000 index** — the benchmark a product would be measured against — the portfolio earns **9.65%** with **8.05% excess** and **IR 0.90**. But it decomposes entirely into known premia: **~3.70pp size gap + ~4.25pp style exposure + ≈0 residual alpha**.
 > 7. The pipeline runs **daily**; the live selector reproduces the 385-period replay **exactly (50/50 names)**. A paper-trading record started **2026-11-20** — the project's first genuine out-of-sample evidence.
 > 8. **Replicated five classic anomalies**: **4/4 at their own horizons, 3/4 at the 5-day frequency — but none adds anything** (residual IC all below 0.015). The decision was to add no factor. See `FACTOR_ZOO.md`.
-> 9. **The 4.25% headline is a flat-12bp-cost artefact.** Under stock-level square-root impact costs: **1.90pp at 100m AUM, 0.31pp at 200m, breakeven ≈ 230m** — independently confirming the 240m capacity figure.
+> 9. **The 4.25% headline is a flat-12bp-cost artefact.** Under stock-level square-root impact costs (N=50): **1.90pp at 100m AUM, 0.31pp at 200m, breakeven ≈ 230m** — independently confirming the 240m capacity figure.
 > 10. **Research is closed.** Four directions tested and rejected: price-volume (0 incremental), holding period (5 days optimal), asset growth (pseudo-signal), SUE (real signal, untradeable).
 > 11. **Seven directions closed with no attributable alpha**: price-volume replication, holding period, fundamentals, SUE, conditional heterogeneity (all beta), state dependence (overlay flips **17×/year**), and GBDT (**−1.03pp at 100m AUM; OLS loses 1.4pp to equal weight**). **The money is in implementation, not in signal.**
+> 12. **A cost-model bug was caught before publication.** The square-root impact term was charged at a 1/50 order size even for 400-name portfolios, overstating impact by √8 ≈ 2.8× and halving the reported capacity. Fixed; every capacity figure in this report is post-fix.
 
 ---
 
@@ -62,6 +63,8 @@
 
 > Gross is geometric annualised; cost is arithmetic annualised — they do not subtract exactly.
 > The headline in earlier versions (9.79% / 4.38% excess) understated costs by half. See §6.6.
+>
+> **Two excess conventions coexist and are both correct.** *Ratio* is the excess NAV re-annualised (4.25% against the EW universe, 8.05% against the index — used in §6.9 and on the product sheet). *Difference* is two annualised returns subtracted (4.47pp and 8.17pp — used in this table and §6.7). They satisfy `4.25 ≈ 4.47 / (1 + 5.18%)`. This is a different effect from the gross-minus-cost gap above.
 
 > **All cost figures on this page assume a flat 12 bp per unit traded.** §6.10 replaces it with stock-level impact costs and shows the excess falls to 1.90pp at 100m AUM. **Read §6.10 before quoting any number here.**
 
@@ -284,11 +287,13 @@ Square-root impact: `rate = 0.7 × σ_daily × sqrt(Q / ADV) + 3 bp`, σ and ADV
 
 | AUM | Stratified + threshold | Baseline |
 |---:|---:|---:|
-| 1 亿 | **+1.91%** | −5.55% |
-| 2 亿 | +0.42% | −10.18% |
-| 3 亿 | −0.71% | −13.57% |
+| 1 亿 | **+1.90%** | −5.55% |
+| 2 亿 | +0.31% | −10.18% |
+| 3 亿 | −0.90% | −13.57% |
 
-**Capacity is about 2.4 亿.** The naive construction has negative excess at every size tested.
+*(Aligned with §6.10 — same model, same floor.)*
+
+**Capacity is about 2.4 亿 at N=50.** The naive construction has negative excess at every size tested. Widening to N=400 lifts the reportable range to **12–20 亿** — see §6.11.
 
 ### 6.6 Revision of the headline
 
@@ -302,6 +307,8 @@ The cost convention alone accounts for about −2.9 pp. Phase 1's 4.38% excess i
 
 A separate alignment fixed a score-semantics divergence: the incremental pipeline had been filling "not a constituent" with zero, which drags a stock's smoothed score toward the median. Both paths now use NaN-aware scoring, and the live selector reproduces the replay at 50/50.
 
+> Note the two different problems this is often confused with. Filling *out-of-universe* names with 0 is a bug (they must be NaN). Filling a *missing single factor* for an in-universe name with 0 is deliberate median imputation — about 14% of stock-days miss exactly one factor. The sensitivity of the latter is reported in §9.
+
 ### 6.7 Risk attribution
 
 5-day Brinson decomposition (384 periods, identity residual 3e-18).
@@ -313,6 +320,8 @@ A separate alignment fixed a score-semantics divergence: the incremental pipelin
 | Annualised return | +0.30% | **+4.05%** | +0.70% |
 
 **Total tracking error: 7.06%** (portfolio vol 22.67% vs benchmark 25.52%).
+
+> Two volatility conventions appear in this document. This section uses rebalance-period returns (portfolio vol 22.67%, TE 7.06%). §6.9 uses daily returns (portfolio vol 21.68%, TE 6.97%). Both are correct; do not compare across sections.
 
 1. **Risk and return come from stock selection, not sector bets.** Selection accounts for 77.2% of active variance and 80% of active return.
 2. **Industry neutrality is nearly free.** Allocation consumes 4.2% of the risk budget and earns +0.30% — an IR of about 0.21 on that sleeve.
@@ -371,6 +380,8 @@ Reported against the cap-weighted CSI 1000 index — the benchmark a product wou
 | Up capture | 0.84 | 0.82 |
 | Down capture | 0.81 | 0.76 |
 
+> Excess here is the **ratio** convention. The **difference** convention gives 4.47pp and 8.17pp respectively; `4.25 ≈ 4.47/1.0518` and `8.05 ≈ 8.17/1.0148`.
+
 **The 8.05% decomposes entirely into known premia:**
 
 | Source | Contribution | Nature |
@@ -396,7 +407,7 @@ Reported against the cap-weighted CSI 1000 index — the benchmark a product wou
 
 ### 6.10 The cost assumption — the number that matters most
 
-Every figure above uses a **flat 12 bp per unit of traded weight**. Replacing it with stock-level square-root impact:
+Every figure above uses a **flat 12 bp per unit of traded weight**. Replacing it with stock-level square-root impact (N=50):
 
     c_i = 0.7 · σ_i,daily · sqrt(Q / ADV_i) + 3 bp      Q = AUM / 50
 
@@ -411,6 +422,33 @@ Every figure above uses a **flat 12 bp per unit of traded weight**. Replacing it
 **Real median cost is 22–41 bp, two to four times the flat assumption. Breakeven AUM ≈ 230m** — independently matching the **240m** capacity estimate from §6.5.
 
 > **Never quote the 4.25% without this table.** The honest statement is: *4.25% under a flat 12 bp cost; 1.90pp at 100m AUM under stock-level impact costs; breakeven at 230m.*
+
+### 6.11 Widening to 400 names — the only implementable improvement
+
+Gross excess is flat across breadth (**6.36 → 6.34, no monotone trend**); everything else is cost and tracking error.
+
+| | N=50 | N=400 |
+|---|---:|---:|
+| Gross excess (measured) | 6.36pp | 6.34pp |
+| Tracking error | 6.97% | **3.90%** |
+| Turnover | 714% | **447%** |
+| **IR** | 0.64 | **1.32** |
+| Excess @ 0.5 亿 | 3.04pp | **5.37pp** |
+| Excess @ 1.0 亿 | 1.90pp | **5.11pp** |
+| Excess @ 2.0 亿 | 0.31pp | **4.75pp** |
+
+Capacity at k=0.7 (N=400): 0.5亿 +5.37 / 1亿 +5.11 / 2亿 +4.75 / 5亿 +4.03 / 10亿 +3.22 / 20亿 +2.09 / 30亿 +1.24pp — **no zero crossing inside 30 亿**. The pessimistic k=1.4 case breaks even at **~12 亿**; at 30 亿 a single position is 7% of ADV (p90 24%), where the square-root model's "trading does not move price" assumption no longer holds. **Reportable range: 12–20 亿.**
+
+N ≥ 200 is a plateau (4.66–5.15, range 0.49pp); **N=100 is a trough at 3.51pp**, caused by industry-quota rounding.
+
+> At 0.5 亿 the N=400 excess (5.37pp) exceeds the flat-12bp figure (5.15pp) because realised one-way cost is ~9.4bp, i.e. *below* the 12bp assumption. This is not an inconsistency.
+
+Two caveats on this variant:
+
+- **`Q = AUM/N` charges every traded name as if the whole position turned over.** Since 98% of turnover is name replacement this is close to exact, but for partial rebalances it is conservative. A conservative cost model means capacity is a *floor*, not a ceiling.
+- **It changes no factor exposure** — ln market cap is 22.63 vs 22.66, holding turnover 1.37 vs 1.04. The gain is concentration reduction, not signal.
+
+**turn_20 as a single factor (tested, not adopted).** At N=400 it earns 6.56pp at 12bp (IR 1.80, turnover 329%, 8/8 positive years). An exposure check against the 4-factor N=400 portfolio shows it is **not** a re-skin: EP exposure is **−0.49** (its holdings are essentially not value at all), low-vol −0.15, reversal −0.08. Pool turnover averages **2.38%/day** — the earlier "about 1.1" was wrong — and its holdings average 1.28%, i.e. still 54% of the pool, so the low-turnover exposure is *not* washed out by breadth. It remains a low-turnover / low-attention premium with single-factor model risk (loses to the 4-factor in 2020/2023/2024). **Not adopted; research conclusion only.**
 
 ---
 
@@ -438,9 +476,9 @@ Sign-aligned so higher is better: `rev_5 = −5d return`, `turn_20 = −20d mean
       → OLS residualization on industry dummies + log circulating market cap
       → z-score
 
-**Composite** — equal weight of the three-period smoothed scores (`mean(score_t, score_{t−5}, score_{t−10})`), NaN-aware: a stock absent from the constituents contributes no observation rather than a zero.
+**Composite** — equal weight of the three-period smoothed scores (`mean(score_t, score_{t−5}, score_{t−10})`). A stock absent from the constituents contributes no observation rather than a zero; a stock present but missing one factor gets the cross-sectional median for that factor.
 
-**Portfolio** — top 50, industry-stratified, 5-day rebalance, buy-and-hold between rebalances, cost charged on every trade.
+**Portfolio** — **top 50** in the production configuration, industry-stratified, 5-day rebalance, buy-and-hold between rebalances, cost charged on every trade. **Top 400** is the validated widening (§6.11) and is not yet in the paper record.
 
 ---
 
@@ -483,10 +521,10 @@ Adding a listing-age dimension: new listings (<1y) are only **13 stocks/day, 12 
 - **The 8.05% figure against the index is not alpha.** ~3.70pp is a size gap, ~4.25pp is style exposure, residual is ≈ 0.
 - **The headline is a cost story.** Roughly three quarters of the Phase 3 gain comes from lower trading costs.
 - **The hit rate is thin.** 53.4% of 5-day periods are positive; 54.2% of months.
-- **Capacity is small.** About 2.4 亿 on CSI 1000 mid-caps.
+- **Capacity is small at N=50** (about 2.4 亿). Widening to N=400 raises the reportable range to **12–20 亿**, bounded by position/ADV rather than by the zero-crossing of the impact model.
 - **The market-neutral variant is a basis trade.** Breakeven discount 7.99%; IM has traded at 5–10% recently, and size exposure survives hedging.
 - **Freshness beats breadth, and it is fragile.** Usable Δ range 0.25–0.50.
-- **The impact model is conservative.** Single-day execution assumed.
+- **The impact model is conservative.** Single-day execution assumed; `Q = AUM/N` assumes full-position turnover per traded name.
 - **The live pipeline uses a frozen universe** (2025-12-31 snapshot); monthly constituent updates are not automated.
 - **Industry classification is current, not point-in-time** (136 categories).
 - **Upstream data has known bad rows.** `.BJ` `pct_chg` reaches 200,400% (3.0% of rows).
@@ -496,10 +534,11 @@ Adding a listing-age dimension: new listings (<1y) are only **13 stocks/day, 12 
 - **Frequency dependence is real.** The 52-week-high effect is zero at 5 days and ≈ −9%/yr at six months.
 - **Holding period is not a free lunch.** A 3×2 grid shows 5 days is optimal; gross and net fall together at longer horizons.
 - **Conditional use does not survive the industry-quota machinery.** Narrow pools triple turnover (714% → 3335%).
-- **`fina_indicator` lacks `f_ann_date` / `report_type`**, and reports YTD `roe`/`assets_turn` — annual-only use required.
+- **`fina_indicator` lacks `f_ann_date` / `report_type`**, and reports YTD `roe` / `assets_turn` — annual-only use required.
 - **Seven directions tested, none produced attributable alpha.** See `FACTOR_ZOO.md` §7.
 - **State dependence is beta directionality, not timing.** Excess runs −3.70% when the market's 20-day return is in the bottom tercile and +8.24% in the top; an overlay flips **17 times/year** with a 7.4-day average spell.
 - **Fitted weights underperform equal weight — three times.** IC-weighting, orthogonalisation, and walk-forward OLS all lose to equal weighting (OLS by 1.4pp).
+- **Missing factors are median-imputed.** About 14% of stock-days miss exactly one factor and receive z = 0 for it. An available-case average (dividing by the count of valid factors) instead drops annual return from **9.65% to 8.58%** and IR from **0.61 to 0.47**, while turnover rises to 749% — the count-normalised score has higher variance for stocks with fewer factors, so they are over-selected. Median imputation is retained deliberately; the alternative is reported here as a sensitivity.
 
 ### 9.1 Out-of-sample status
 
@@ -522,8 +561,9 @@ The full 2018–2025 sample has been used for everything. **None of it is out of
 | Phase 8 | Factor zoo + replication: **4/4 at paper horizon, 0 incremental** | ✅ complete |
 | Phase 9 | Holding period, conditional heterogeneity, cost realism | ✅ complete |
 | Phase 10 | State dependence, GBDT/OLS | ✅ complete — **research closed** |
+| Phase 11 | **Cost-model audit; widening to N=400 validated** | ✅ complete — capacity 4.5 亿 → **12–20 亿** |
 
-**Repositioning.** With no alpha across seven directions, the value is not in factor discovery but in **measurement**: knowing where the return comes from (cost, not signal), what it costs to trade (22–41 bp, not 12), and at what size it disappears (230m).
+**Repositioning.** With no alpha across seven directions, the value is not in factor discovery but in **measurement**: knowing where the return comes from (cost, not signal), what it costs to trade (22–41 bp, not 12), and at what size it disappears (230m at N=50, 12–20 亿 at N=400).
 
 ---
 
@@ -566,7 +606,7 @@ The full 2018–2025 sample has been used for everything. **None of it is out of
     39_pull_fina_indicator.py  Phase 9: fina_indicator fetch
     40_ic_heterogeneity.py     Phase 9: 3×3 cap×turnover + listing-age buckets
     40b_bucket_universe.py     Phase 9: restricted-universe test, dual benchmark
-    41_cost_liquidity.py       Phase 9: stock-level impact cost, breakeven AUM
+    41_cost_liquidity.py       Phase 9: stock-level impact cost, breakeven AUM (N=50)
     42_probe_alt.py            Phase 10: trade-structure API probe
     43_pull_alt.py             Phase 10: trade-structure pull (threaded, --step)
     44_alt_factors.py          Phase 10: margin / big-order / tiger seats / block
@@ -577,6 +617,16 @@ The full 2018–2025 sample has been used for everything. **None of it is out of
     46b_regime_flips.py        Phase 10: overlay flip frequency
     47_gbdt.py                 Phase 10: GBDT vs linear, walk-forward
     47b_gbdt_verify.py         Phase 10: cost / by-year / OLS verification
+    48_topn.py                 TOP_N quick sweep (+ margin_chg 20%)
+    49_topn_verify.py          Phase 11: N-grid TE/IR, per-stock cost (part=1/n), gross measured
+    50_rebuild_base.py         Phase 11: rebuild base factors by incremental t
+    51_final_checks.py         Phase 11: TOP_N 300–600 grid, turn_20 solo
+    52_turn20_n400.py          Phase 11: turn_20 wide-portfolio test
+    52b_exposure.py            Phase 11: style-exposure check on turn_20 N=400
+    53_turn20_years.py         Phase 11: turn_20 by-year
+    63_capacity.py             Phase 11: capacity curve + k sensitivity (+ --replot)
+    70_make_figures.py         Phase 11: nav.png / excess.png
+    71_composite_ab.py         Phase 11: composite imputation A/B
     daily_run.py               Phase 5: daily incremental pipeline
     factorlab/core.py          Phase 7: single implementation of data/score/select/replay
     factorlab/factors.py       Phase 7: data, alive-aware filling, FWL neutralization
@@ -647,6 +697,17 @@ Phase 7–9 (research):
     python 41_cost_liquidity.py      # ~5 min
     python 36_new_factor.py --report # cumulative trial log + BH
 
+Phase 9b — widening, capacity, diagnostics (reproduces §6.11):
+
+    python 49_topn_verify.py         # ~15 min: N-grid TE/IR + per-stock cost
+    python 63_capacity.py            # ~15 min: capacity curve + k sweep
+    python 63_capacity.py --replot   # ~20 s: redraw from saved CSVs
+    python 51_final_checks.py        # ~10 min: N=300–600, turn_20 solo
+    python 52_turn20_n400.py         # ~13 min: turn_20 wide test
+    python 52b_exposure.py           # ~5 min: exposure check
+    python 71_composite_ab.py        # ~8 min: imputation sensitivity
+    python 70_make_figures.py        # ~2 min: figures
+
 Phase 10 (direction closure):
 
     python 42_probe_alt.py
@@ -657,6 +718,10 @@ Phase 10 (direction closure):
     python 46b_regime_flips.py
     python 47_gbdt.py
     python 47b_gbdt_verify.py
+
+Verification:
+
+    python tests/test_regression.py; echo "EXIT=$?"   # expect ✅ and EXIT=0
 
 Phase 5 (daily operation):
 

@@ -1,12 +1,16 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-33_product_metrics.py  (v4)
+33_product_metrics.py  (v5)
 指数增强口径的产品指标。
 
-v4 修改
-  ★ composite 改为 NaN-aware（与 28 / core.py 一致）
-  ★ 指数收益 shift(-1)，与组合的 T+1 约定对齐
+v5 修改
+  ★ composite / smooth_score / quota_select 改为 import factorlab.core（唯一实现）
+      —— 消除本地副本；core 改 composite 口径时本脚本自动跟随
+  ★ stats() 同时输出「差值口径」与「比值口径」两种超额，并打印恒等式
+      比值 ≈ 差值 / (1 + 基准年化)          （4.25 ≈ 4.47 / 1.0518）
+  ★ 新增 毛收益 / 毛超额_差值 / 信息比率_差值，用于「毛利 − 成本 ≠ 净」的闭包核对
+  ★ 理论容量从硬编码改为常量 CAPACITY_YI（改 N 时必须同步）
 
 输出
   data/output_product/product_sheet.csv
@@ -17,6 +21,7 @@ v4 修改
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -28,6 +33,10 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from config import DATA_DIR
+from factorlab.core import (composite as core_composite,
+                            smooth_score as core_smooth,
+                            quota_select as core_quota,
+                            FACTORS, TOP_N, REBAL, COST, THRESH, COST_MULT)
 
 load_dotenv()
 
@@ -37,17 +46,18 @@ PANEL = DATA_DIR / "panel"
 OUT = DATA_DIR / "output_product"
 OUT.mkdir(parents=True, exist_ok=True)
 
-FACTORS = ["rev_5", "turn_20", "vol_20", "ep"]
-TOP_N, REBAL, COST, THRESH = 50, 5, 0.0012, 0.25
-COST_MULT = 2.0
 INDEX_CODE = "000852.SH"
 YEARS = 252
 HIST_END = "20251231"
 READ_YEARS = [str(y) for y in range(2018, 2026)]
 
-PCT_ROWS = {"年化收益", "年化波动", "基准年化", "年化超额",
-            "跟踪误差", "月度胜率", "超额最大回撤", "组合最大回撤"}
-RAW_ROWS = {"夏普", "信息比率", "Beta", "上行捕获", "下行捕获"}
+# ★ 与 41 / 63 对齐；换 N 时必须改这里（目前只有 N=50 的容量有出处）
+CAPACITY_YI = 2.4
+
+PCT_ROWS = {"年化收益", "年化波动", "基准年化", "年化超额", "年化超额_差值",
+            "毛收益", "毛超额_差值", "跟踪误差", "月度胜率",
+            "超额最大回撤", "组合最大回撤"}
+RAW_ROWS = {"夏普", "信息比率", "信息比率_差值", "Beta", "上行捕获", "下行捕获"}
 
 
 def log(m):
@@ -97,7 +107,7 @@ def load_index_ret(code=INDEX_CODE, min_days=1800):
 
     if df.empty or "trade_date" not in df.columns \
             or df.trade_date.astype(str).nunique() < min_days:
-        log(f"   指数缓存不足，按年重拉...")
+        log("   指数缓存不足，按年重拉...")
         pro = ts.pro_api(os.getenv("TUSHARE_TOKEN"))
         parts = []
         for y in range(2018, 2026):
@@ -122,56 +132,10 @@ log("② 读取中证 1000 指数...")
 idx_ret = load_index_ret()
 
 
-# ==================== 3. 分数 + 回放 ====================
-_tot = sum(wide[n].fillna(0.0) for n in FACTORS)
-_val = sum(wide[n].notna().astype(int) for n in FACTORS) > 0
-score_raw = (_tot / len(FACTORS)).where(_val)
-
-
-def smooth_score(s):
-    acc = s.fillna(0.0).copy()
-    cnt = s.notna().astype(int).copy()
-    for k in (REBAL, 2 * REBAL):
-        sh = s.shift(k)
-        acc = acc + sh.fillna(0.0)
-        cnt = cnt + sh.notna().astype(int)
-    return acc / cnt.replace(0, np.nan)
-
-
-score = smooth_score(score_raw)
-
-
-def quota_select(s, held):
-    df = pd.DataFrame({"score": s,
-                       "ind": industry.reindex(s.index).fillna("UNKNOWN")}).dropna()
-    if df.empty or len(df) < TOP_N:
-        return []
-    share = df.groupby("ind").size() / len(df)
-    raw = share * TOP_N
-    base = np.floor(raw).astype(int)
-    remain = TOP_N - int(base.sum())
-    if remain > 0:
-        for key in list((raw - base).sort_values(ascending=False).index)[:remain]:
-            base.loc[key] += 1
-
-    delta = THRESH * float(df["score"].std())
-    picks = []
-    for ind_, k in base.items():
-        if k <= 0:
-            continue
-        pool = df[df["ind"] == ind_].sort_values("score", ascending=False)
-        if pool.empty:
-            continue
-        cut = float(pool["score"].iloc[min(int(k), len(pool)) - 1])
-        kept = [c for c in held if c in pool.index and float(pool.loc[c, "score"]) >= cut - delta]
-        kept = sorted(kept, key=lambda c: -float(pool.loc[c, "score"]))[:int(k)]
-        fill = [c for c in pool.index if c not in set(kept)][:int(k) - len(kept)]
-        picks.extend(kept + fill)
-    picks = list(dict.fromkeys(picks))[:TOP_N]
-    if len(picks) < TOP_N:
-        rest = df[~df.index.isin(set(picks))].nlargest(TOP_N - len(picks), "score")
-        picks += rest.index.tolist()
-    return list(dict.fromkeys(picks))[:TOP_N]
+# ==================== 3. 分数（全部走 core） + 回放 ====================
+# ★ 唯一实现：core.composite 的 NaN 处理口径若改，这里自动跟随
+score_raw = core_composite(SimpleNamespace(fac=wide))
+score = core_smooth(score_raw)
 
 
 log("③ 回放...")
@@ -185,7 +149,7 @@ for i, d in enumerate(idx):
     if i % REBAL == 0:
         s = score.loc[d].where(mask.loc[d]).dropna()
         if len(s) >= TOP_N:
-            picks = quota_select(s, held)
+            picks = core_quota(s, industry, held)          # ★ 不再用本地副本
             if picks:
                 w_new = pd.Series(1.0 / len(picks), index=picks).reindex(cols).fillna(0.0)
                 tot = w_live.sum()
@@ -206,6 +170,7 @@ for i, d in enumerate(idx):
     w_live = w_live * (1 + r)
 
 net = (gross_s - to_s * COST * COST_MULT).iloc[:-1]
+gross_ret = gross_s.iloc[:-1]                                  # ★ 与 net 同索引
 bench_ew = fwd.where(mask).mean(axis=1).reindex(net.index).fillna(0.0)
 
 # ★ 指数必须 shift(-1)，与组合的 T+1 收益对齐
@@ -215,7 +180,7 @@ log(f"   回放完成，{len(net)} 天")
 
 
 # ==================== 4. 指标 ====================
-def stats(net, bench, label, rf=0.0):
+def stats(net, bench, label, gross=None, rf=0.0):
     n = len(net)
     active = net - bench
     nav_p = (1 + net).cumprod()
@@ -224,11 +189,15 @@ def stats(net, bench, label, rf=0.0):
     ann_p = nav_p.iloc[-1] ** (YEARS / n) - 1
     ann_b = nav_b.iloc[-1] ** (YEARS / n) - 1
     ex_nav = nav_p / nav_b
-    ex_ann = ex_nav.iloc[-1] ** (YEARS / n) - 1
+    ex_ann = ex_nav.iloc[-1] ** (YEARS / n) - 1             # 比值口径（4.25 / 8.05）
 
     te = float(active.std() * np.sqrt(YEARS))
     vol_p = float(net.std() * np.sqrt(YEARS))
     var_b = float(np.var(bench))
+
+    gross_ann = np.nan
+    if gross is not None:
+        gross_ann = float((1 + gross).cumprod().iloc[-1] ** (YEARS / n) - 1)
 
     up, down = bench > 0, bench < 0
     mkey = net.index.str[:6]
@@ -240,9 +209,13 @@ def stats(net, bench, label, rf=0.0):
         "年化波动": vol_p,
         "夏普": (ann_p - rf) / vol_p if vol_p > 0 else np.nan,
         "基准年化": ann_b,
-        "年化超额": ex_ann,
+        "年化超额": ex_ann,                                 # 比值口径
+        "年化超额_差值": ann_p - ann_b,                      # ★ 差值口径（4.47）
+        "毛收益": gross_ann,                                # ★
+        "毛超额_差值": (gross_ann - ann_b) if np.isfinite(gross_ann) else np.nan,
         "跟踪误差": te,
         "信息比率": ex_ann / te if te > 0 else np.nan,
+        "信息比率_差值": (ann_p - ann_b) / te if te > 0 else np.nan,   # ★
         "月度胜率": float((m_active > 0).mean()),
         "月数": len(m_active),
         "超额最大回撤": float((ex_nav / ex_nav.cummax() - 1).min()),
@@ -254,9 +227,9 @@ def stats(net, bench, label, rf=0.0):
 
 
 log("④ 计算产品指标...")
-rows = [stats(net, bench_ew, "等权全池（研究口径）")]
+rows = [stats(net, bench_ew, "等权全池（研究口径）", gross=gross_ret)]
 if idx_ret_aligned is not None:
-    rows.append(stats(net, idx_ret_aligned, "中证1000指数（产品口径）"))
+    rows.append(stats(net, idx_ret_aligned, "中证1000指数（产品口径）", gross=gross_ret))
 tab = pd.DataFrame(rows).set_index("基准")
 
 ann_to = float(to_s.replace(0, np.nan).mean() * (252 / REBAL))
@@ -268,7 +241,7 @@ extra = pd.DataFrame([{
     "行业偏离最大": float(dev_s.max()),
     "持仓只数": int(np.mean(list(n_picks.values()))),
     "最大个股权重": 1.0 / TOP_N,
-    "理论容量(亿)": 2.4,
+    "理论容量(亿)": CAPACITY_YI,                        # ★ 常量，不再硬编码在 dict 里
 }], index=["组合约束"])
 
 
@@ -286,6 +259,14 @@ for r in show.index:
         show.loc[r] = show.loc[r].round(2)
 log(show.to_string())
 log("\n（百分比类单位为 %；夏普/IR/Beta/捕获率为倍数）")
+
+log("\n【口径恒等式核对】")
+_r = tab.loc["等权全池（研究口径）"]
+_p = float(_r["年化超额"]) * 100
+_d = float(_r["年化超额_差值"]) * 100
+_b = float(_r["基准年化"])
+log(f"  比值口径 {_p:.2f}%  ≈  差值口径 {_d:.2f}% / (1+{_b*100:.2f}%) = {_d/(1+_b):.2f}%")
+log("  两者差额不是误差：4.25 ≈ 4.47 / 1.0518")
 
 log("\n【交易与约束】")
 ex_show = extra.T.copy()

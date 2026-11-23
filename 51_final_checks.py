@@ -130,7 +130,7 @@ def main():
         d["N"] = n
         d["主动份额"] = active_share(r.holdings, p.mask)
         # 1 亿成本
-        cm = cost_matrix(p, daily, 1e8)
+        cm = cost_matrix(p, daily, 1e8, part=1.0 / n)
         r1 = replay(score4, p, top_n=n, cost=cm)
         d["1.0亿"] = stats(r1, b)["超额pp"]
         rows.append(d)

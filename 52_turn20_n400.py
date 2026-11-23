@@ -126,7 +126,7 @@ def main():
             f"持仓换手率 {d['持仓换手率']:.2f}  ln市值 {d['持仓ln市值']:.2f}")
 
     log("\n③ turn_20 N=400 的逐股成本...")
-    cms = {lab: cost_matrix(p, daily, aum) for aum, lab in AUMS}
+    cms = {lab: cost_matrix(p, daily, aum, part=1.0 / 400) for aum, lab in AUMS}
     for lab in cms:
         r = replay(s20, p, top_n=400, cost=cms[lab])
         v = stats(r, b)["超额pp"]

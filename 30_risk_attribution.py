@@ -1,24 +1,41 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-30_risk_attribution.py  (v2)
-跟踪误差及其分解（5 日 Brinson，385 个周期）。
+30_risk_attribution.py  (v3.2)
 
-v2 修改
-  ★ 改为使用 3 期平滑分数（与 28 的 "Strat + A+B"、31、daily_run 一致）
-    此前用原始分数，持仓与最终策略不同，TE 数字需重算
+v3 新增
+  ★ --bridge        alpha 收益桥：风格暴露 / alpha / 基准差，恒等式闭合
+  ★ --bridge-only   只跑桥，跳过 Brinson（约 1 分钟，迭代用）
+  ★ 回放循环补 gross / cost 记账，口径与 factorlab.core.replay、33 号一致：
+        net = gross − Σ|Δw|·COST      （Σ|Δw| 已含双边，不再乘 COST_MULT）
+  ★ 与 33 号对账：毛收益 / 净收益 / 成本 pp
+  ★ --drop-2018     剔除 2018 重算（对照 SUE 那次空仓假象）
 
-输出
-  data/output_risk/te_summary.csv
-  data/output_risk/return_attribution.csv
-  data/output_risk/brinson_industry.csv
-  data/output_risk/period_detail.csv
+v3.1 修正
+  ★ ex_ratio 先算后用（修 f-string 括号错误）
+  ★ 恒等式断言用未取整值（round(2) 会让 assert 误报）
+  ★ 常数项名兼容 const / Intercept
+  ★ 缺 daily_basic_*.parquet 时自动降级为两因子回归
+
+v3.2 修正
+  ★ score_raw 补回 NaN-aware 语义（四因子全缺失 → NaN，不是 0）
+    此前漏了这一步，复现出已废弃的旧口径 10.10%（应为 9.65%）
+  ★ mask 用 fillna(0) 消除 Pandas4Warning
+
+原有 Brinson / TE 逻辑与输出保持不变。
+
+用法
+  .venv/bin/python 30_risk_attribution.py
+  .venv/bin/python 30_risk_attribution.py --bridge
+  .venv/bin/python 30_risk_attribution.py --bridge-only
+  .venv/bin/python 30_risk_attribution.py --bridge-only --drop-2018
 """
+import argparse
 import time
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import statsmodels.api as sm
 
 from config import DATA_DIR
 
@@ -31,7 +48,17 @@ OUT.mkdir(parents=True, exist_ok=True)
 FACTORS = ["rev_5", "turn_20", "vol_20", "ep"]
 TOP_N, REBAL = 50, 5
 THRESH = 0.25
-PERIODS_PER_YEAR = 252 / REBAL
+COST = 0.0012
+ANN = 252
+PERIODS_PER_YEAR = ANN / REBAL
+HIST_END = "20251231"
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--bridge", action="store_true", help="追加 alpha 收益桥")
+ap.add_argument("--bridge-only", action="store_true", help="只跑桥，跳过 Brinson")
+ap.add_argument("--drop-2018", action="store_true", help="剔除 2018 年")
+args = ap.parse_args()
+BRIDGE = args.bridge or args.bridge_only
 
 
 def log(m):
@@ -56,6 +83,7 @@ fac = pd.read_parquet(PANEL / "factors_neutral.parquet")
 wide = {n: fac.pivot(index="trade_date", columns="ts_code", values=n) for n in FACTORS}
 
 idx = ret.index.intersection(wide["rev_5"].index).sort_values()
+idx = idx[idx <= HIST_END]
 cols = ret.columns
 for n in FACTORS:
     wide[n] = wide[n].reindex(index=idx, columns=cols)
@@ -65,18 +93,37 @@ fwd5 = fwd5.reindex(index=idx, columns=cols)
 tr = pd.read_parquet(PANEL / "tradable.parquet")
 if isinstance(tr.index, pd.DatetimeIndex):
     tr.index = tr.index.strftime("%Y%m%d")
-mask = tr.reindex(index=idx, columns=cols).fillna(False).astype(bool)
+mask = tr.reindex(index=idx, columns=cols).fillna(0).astype(bool)
 
 sb = pd.concat([pd.read_parquet(REF / "stock_basic.parquet"),
                 pd.read_parquet(REF / "stock_delisted.parquet")],
                ignore_index=True).drop_duplicates("ts_code")
 industry = sb.set_index("ts_code")["industry"].reindex(cols).fillna("UNKNOWN")
 
+# 规模因子（桥需要；缺文件则降级）
+logmv = None
+SIZE_OK = False
+if BRIDGE:
+    bfiles = sorted(RAW.glob("daily_basic_*.parquet"))
+    if bfiles:
+        bframes = [pd.read_parquet(f, columns=["ts_code", "trade_date", "circ_mv"])
+                   for f in bfiles]
+        bb = pd.concat(bframes, ignore_index=True).drop_duplicates(["trade_date", "ts_code"])
+        logmv = np.log(bb.pivot(index="trade_date", columns="ts_code", values="circ_mv")
+                       .reindex(index=idx, columns=cols) * 1e4)
+        del bb, bframes
+        SIZE_OK = True
+    else:
+        log("   ⚠ 缺 daily_basic_*.parquet → 规模因子不进回归")
+
 log(f"   {len(idx)} 天 × {len(cols)} 只，行业 {industry.nunique()} 个")
 
 
 # ==================== 2. 分数（含平滑） ====================
-score_raw = sum(wide[n].fillna(0) for n in FACTORS) / len(FACTORS)
+# ★ NaN-aware：四因子全缺失 → NaN（不可选），与 factorlab.core.composite 一致
+_parts = [wide[n] for n in FACTORS]
+_valid = sum(d.notna().astype(int) for d in _parts) > 0
+score_raw = (sum(d.fillna(0.0) for d in _parts) / len(FACTORS)).where(_valid)
 
 
 def smooth_score(s):
@@ -136,23 +183,173 @@ def select_quota_hyst(s, held, sigma_mult=THRESH):
     return list(dict.fromkeys(picks))[:TOP_N]
 
 
-log("② 回放最终版本，记录每期持仓...")
+log("② 回放最终版本，记录持仓 / 毛收益 / 成本...")
+w_live = pd.Series(0.0, index=cols)
 held = []
 holdings = {}
+gross_s = pd.Series(0.0, index=idx)
+cost_s = pd.Series(0.0, index=idx)
+to_s = pd.Series(0.0, index=idx)
+
 for i, d in enumerate(idx):
-    if i % REBAL != 0:
-        continue
-    s = score.loc[d].where(mask.loc[d]).dropna()
-    if len(s) < TOP_N:
-        continue
-    held = select_quota_hyst(s, held)
-    if held:
-        holdings[d] = list(held)
+    if i % REBAL == 0:
+        s = score.loc[d].where(mask.loc[d]).dropna()
+        if len(s) >= TOP_N:
+            new = select_quota_hyst(s, held)
+            held = new
+            if new:
+                holdings[d] = list(new)
+                w_new = (pd.Series(1.0 / len(new), index=new)
+                         .reindex(cols).fillna(0.0))
+                tot = w_live.sum()
+                w_drift = (w_live / tot) if tot > 0 else w_live
+                dw = (w_new - w_drift).abs()
+                to_s.loc[d] = float(dw.sum() / 2)
+                cost_s.loc[d] = float(dw.sum() * COST)      # 已含双边
+                w_live = w_new
+
+    r = fwd.loc[d].fillna(0.0)
+    gross_s.loc[d] = float((w_live * r).sum())
+    w_live = w_live * (1 + r)
 
 log(f"   {len(holdings)} 个调仓期")
 
+gross_ret = gross_s.iloc[:-1]
+cost_ret = cost_s.iloc[:-1]
+net = (gross_s - cost_s).iloc[:-1]
+bench = fwd.where(mask).mean(axis=1).reindex(net.index).fillna(0.0)
 
-# ==================== 4. Brinson ====================
+# ---- 与 33 号对账 ----
+g_ann = float((1 + gross_ret).cumprod().iloc[-1] ** (ANN / len(gross_ret)) - 1)
+n_ann = float((1 + net).cumprod().iloc[-1] ** (ANN / len(net)) - 1)
+b_ann = float((1 + bench).cumprod().iloc[-1] ** (ANN / len(bench)) - 1)
+log(f"   对账  毛 {g_ann*100:.2f}%  净 {n_ann*100:.2f}%  "
+    f"成本 {(g_ann-n_ann)*100:.2f}pp  基准 {b_ann*100:.2f}%")
+log("   （33 号应输出 毛 11.54% / 净 9.65% / 基准等权 5.18%）")
+
+
+# ==================== 3b. alpha 收益桥 ====================
+def _ls(f, r, m, q=5, sign=1, min_n=100):
+    """池内分 q 组等权，返回 sign·(高组 − 低组) 的日收益"""
+    fq = f.where(m).rank(axis=1, pct=True)
+    hi = fq > (q - 1) / q
+    lo = fq <= 1 / q
+    rr = r.where(m)
+    out = rr.where(hi).mean(axis=1) - rr.where(lo).mean(axis=1)
+    out[(hi.sum(axis=1) < min_n) | (lo.sum(axis=1) < min_n)] = np.nan
+    return sign * out
+
+
+def load_ix_ret():
+    f = RAW / "index_daily_000852_SH.parquet"
+    if not f.exists():
+        log("   ⚠ 缺 index_daily_000852_SH.parquet，基准差一层跳过")
+        return None
+    d = pd.read_parquet(f)
+    s = d.set_index("trade_date")["pct_chg"].astype(float) / 100.0
+    s.index = s.index.astype(str)
+    return s.sort_index().shift(-1).reindex(net.index).fillna(0.0)
+
+
+def run_bridge():
+    log("\n" + "=" * 78)
+    log("【alpha 收益桥】")
+    log("=" * 78)
+
+    y = (net - bench).reindex(net.index)
+    if args.drop_2018:
+        y = y[y.index > "20181231"]
+
+    R = {}
+    if SIZE_OK:
+        R["规模(小−大)"] = _ls(logmv, fwd, mask, sign=-1)
+    R["价值(EP)"] = _ls(wide["ep"], fwd, mask, sign=+1)
+    R["低波(vol_20)"] = _ls(wide["vol_20"], fwd, mask, sign=+1)
+    R = pd.DataFrame(R).reindex(y.index)
+
+    both = pd.concat([y.rename("ex"), R], axis=1).dropna()
+    yy, XX = both["ex"], both[list(R.columns)]
+
+    res = sm.OLS(yy, sm.add_constant(XX)).fit(
+        cov_type="HAC", cov_kwds={"maxlags": 5})
+
+    cname = res.params.index[0]                 # 'const' 或 'Intercept'
+    alpha = float(res.params[cname]) * ANN
+    t_alpha = float(res.tvalues[cname])
+    beta = res.params.drop(cname)
+    f_ann = XX.mean() * ANN
+    contrib = beta * f_ann
+
+    alpha_pp = alpha * 100
+    contrib_pp = contrib * 100
+    ex_arith = float(yy.mean()) * ANN
+    ex_arith_pp = ex_arith * 100
+
+    # 恒等式用未取整值校验，避免 round(2) 误报
+    assert abs((float(contrib_pp.sum()) + alpha_pp) - ex_arith_pp) < 1e-8, \
+        f"恒等式不闭合：{float(contrib_pp.sum()) + alpha_pp:.6f} vs {ex_arith_pp:.6f}"
+
+    tbl = pd.DataFrame({
+        "beta": beta.round(4),
+        "因子年化%": (f_ann * 100).round(2),
+        "贡献pp": contrib_pp.round(2),
+    })
+    tbl.loc["alpha"] = [np.nan, np.nan, round(alpha_pp, 2)]
+    tbl.loc["合计"] = [np.nan, np.nan, round(float(contrib_pp.sum()) + alpha_pp, 2)]
+
+    log(tbl.to_string())
+    log(f"\n   样本 {len(yy)} 天  R² = {res.rsquared:.3f}  alpha t = {t_alpha:.2f}")
+    log(f"   日均超额算术年化 = {ex_arith_pp:.2f}pp（合计行已闭合）")
+
+    # ---- 复利口径：用真实净值比，不用 prod(1+active) 近似 ----
+    nav_p = (1 + net).reindex(yy.index).cumprod()
+    nav_b = (1 + bench).reindex(yy.index).cumprod()
+    ex_ratio = (nav_p / nav_b).iloc[-1] ** (ANN / len(yy)) - 1
+    log(f"   复利（比值口径）   = {ex_ratio*100:.2f}%")
+
+    # ---- 第二层：基准构造差 ----
+    ix = load_ix_ret()
+    if ix is not None:
+        ix = ix.reindex(yy.index).fillna(0.0)
+        gap_arith = float(bench.mean()) * ANN - float(ix.mean()) * ANN
+        gap_arith_pp = gap_arith * 100
+
+        nav_ix = (1 + ix).cumprod()
+        br_ratio = nav_b.iloc[-1] ** (ANN / len(yy)) - 1
+        ix_ratio = nav_ix.iloc[-1] ** (ANN / len(yy)) - 1
+        gap_ratio = (1 + br_ratio) / (1 + ix_ratio) - 1
+        total_ratio = (1 + ex_ratio) * (1 + gap_ratio) - 1
+        total_arith_pp = ex_arith_pp + gap_arith_pp
+
+        log("\n   基准构造差（等权全池 − 中证1000）")
+        log(f"     算术 = {gap_arith_pp:+.2f}pp")
+        log(f"     复利 = {gap_ratio*100:+.2f}pp")
+        log(f"   vs 等权      算术 {ex_arith_pp:+.2f}pp / 复利 {ex_ratio*100:+.2f}%")
+        log(f"   vs 中证1000  算术 {total_arith_pp:+.2f}pp / "
+            f"复利 {total_ratio*100:+.2f}%")
+        log("     （对照文档 8.05%；差 >0.3pp 说明基准定义或样本期不同）")
+
+    # ---- 文档待替换 ----
+    log("\n   ── 替换用 ──")
+    log(f"   alpha = {alpha_pp:+.2f}%  (t={t_alpha:.2f})")
+    for k in beta.index:
+        log(f"   贡献 {k:<12} = {contrib_pp[k]:+.2f}pp "
+            f"(β={beta[k]:.4f}, 溢价={f_ann[k]*100:.2f}%)")
+    log(f"   因子合计 = {float(contrib_pp.sum()):+.2f}pp")
+
+    p_out = OUT / "alpha_bridge.csv"
+    tbl.to_csv(p_out, encoding="utf-8-sig")
+    log(f"\n   ✅ {p_out}")
+
+
+if BRIDGE:
+    run_bridge()
+    if args.bridge_only:
+        log(f"\n总耗时 {(time.time() - t0) / 60:.1f} 分钟")
+        raise SystemExit(0)
+
+
+# ==================== 4. Brinson（原有，未改） ====================
 log("③ 逐期做 Brinson 分解...")
 rows = []
 
@@ -209,7 +406,9 @@ br["active"] = br.r_p - br.r_b
 br["resid"] = br.active - (br.alloc + br.sel + br.inter)
 
 log(f"   {len(br)} 个有效周期")
-log(f"   恒等式校验：|残差| 均值 {br.resid.abs().mean():.2e}（应接近 0）")
+log(f"   恒等式 |残差| 均值 {br.resid.abs().mean():.2e}")
+assert br.resid.abs().max() < 1e-9, \
+    f"Brinson 残差 {br.resid.abs().max():.2e} → 口径错位"
 
 
 # ==================== 5. 跟踪误差 ====================
@@ -229,11 +428,12 @@ cov_sum = 1 - (share_alloc + share_sel + share_inter)
 
 # ==================== 6. 汇总 ====================
 log("\n" + "=" * 78)
-log("【跟踪误差】")
+log("【跟踪误差】period 口径（√(252/5)）")
 log("=" * 78)
 log(f"   TE（年化）            {te_total:7.2%}")
 log(f"   组合年化波动           {te(br.r_p):7.2%}")
 log(f"   基准年化波动           {te(br.r_b):7.2%}")
+log(f"   日频 TE（√252）        {float(br.active.std() * np.sqrt(ANN)):7.2%}")
 
 log("\n【风险来源分解（方差占比）】")
 risk_tab = pd.DataFrame({
@@ -241,9 +441,10 @@ risk_tab = pd.DataFrame({
     "TE 贡献": [te_alloc, te_sel, te_inter, np.nan, te_total],
     "方差占比": [share_alloc, share_sel, share_inter, cov_sum, 1.0],
 })
-log(risk_tab.to_string(index=False,
-                       formatters={"TE 贡献": lambda x: f"{x:7.2%}" if pd.notna(x) else "   —  ",
-                                   "方差占比": lambda x: f"{x:7.1%}"}))
+log(risk_tab.to_string(
+    index=False,
+    formatters={"TE 贡献": lambda x: f"{x:7.2%}" if pd.notna(x) else "   —  ",
+                "方差占比": lambda x: f"{x:7.1%}"}))
 
 log("\n【收益归因（年化）】")
 ret_tab = pd.DataFrame({
@@ -261,7 +462,7 @@ log(f"   5 日超额 > 0 的比例    {(br.active > 0).mean():7.1%}")
 log(f"   5 日选股贡献 > 0 的比例 {(br.sel > 0).mean():7.1%}")
 
 
-# ==================== 7. 行业明细（行=期，列=行业） ====================
+# ==================== 7. 行业明细 ====================
 log("\n④ 行业明细...")
 alloc_df = pd.DataFrame(list(br["alloc_by_ind"]), index=br.index).fillna(0.0)
 sel_df = pd.DataFrame(list(br["sel_by_ind"]), index=br.index).fillna(0.0)
@@ -277,13 +478,10 @@ ind_tab = pd.DataFrame({
 }).sort_values("选股年化", ascending=False)
 
 log(f"   行业数校验: {len(ind_tab)}（应约 136）")
-
 log("\n【选股贡献最高的 10 个行业（年化 %）】")
 log((ind_tab.head(10) * 100).round(2).to_string())
-
 log("\n【选股贡献最低的 10 个行业（年化 %）】")
 log((ind_tab.tail(10) * 100).round(2).to_string())
-
 log("\n【配置贡献绝对值最大的 10 个行业（年化 %）】")
 order = ind_tab["配置年化"].abs().sort_values(ascending=False).index
 log((ind_tab.loc[order].head(10)[["配置年化", "选股年化"]] * 100).round(2).to_string())
